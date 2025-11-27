@@ -1,0 +1,123 @@
+name: Tests
+
+on:
+  # Run after build workflow completes
+  workflow_run:
+    workflows: ["Build H3 Libraries"]
+    types:
+      - completed
+  # Also run on PRs (will use existing libraries from repo)
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  test:
+    # Only run if build succeeded (or if triggered by PR)
+    if: ${{ github.event_name == 'pull_request' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-14, windows-latest]
+        php: ['8.1', '8.2', '8.3', '8.4', '8.5']
+
+    name: PHP ${{ matrix.php }} - ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # For workflow_run, we need to checkout the correct ref
+          ref: ${{ github.event.workflow_run.head_branch || github.ref }}
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          extensions: ffi
+          coverage: pcov
+
+      - name: Validate composer.json
+        run: composer validate --strict
+
+      - name: Install dependencies
+        run: composer install --prefer-dist --no-progress
+
+      - name: Determine library path
+        id: lib-path
+        shell: bash
+        run: |
+          if [[ "${{ matrix.os }}" == "ubuntu-latest" ]]; then
+            echo "path=bin/linux-x64/libh3.so" >> $GITHUB_OUTPUT
+          elif [[ "${{ matrix.os }}" == "macos-14" ]]; then
+            echo "path=bin/darwin-arm64/libh3.dylib" >> $GITHUB_OUTPUT
+          elif [[ "${{ matrix.os }}" == "macos-13" ]]; then
+            echo "path=bin/darwin-x64/libh3.dylib" >> $GITHUB_OUTPUT
+          elif [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+            echo "path=bin/windows-x64/h3.dll" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Verify H3 library exists
+        shell: bash
+        run: |
+          if [ -f "${{ steps.lib-path.outputs.path }}" ]; then
+            echo "✅ H3 library found at ${{ steps.lib-path.outputs.path }}"
+            ls -la ${{ steps.lib-path.outputs.path }}
+          else
+            echo "❌ H3 library not found at ${{ steps.lib-path.outputs.path }}"
+            echo "Available files in bin/:"
+            find bin -type f 2>/dev/null || echo "bin/ directory not found"
+            exit 1
+          fi
+
+      - name: Run tests
+        run: composer test
+
+  test-coverage:
+    if: ${{ github.event_name == 'pull_request' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    name: Code Coverage
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_branch || github.ref }}
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: ffi
+          coverage: pcov
+
+      - name: Install dependencies
+        run: composer install --prefer-dist --no-progress
+
+      - name: Verify H3 library exists
+        run: |
+          if [ -f "bin/linux-x64/libh3.so" ]; then
+            echo "✅ H3 library found"
+          else
+            echo "❌ H3 library not found"
+            exit 1
+          fi
+
+      - name: Run tests with coverage
+        run: vendor/bin/phpunit --coverage-clover coverage.xml
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          files: coverage.xml
+          fail_ci_if_error: false
+
+  # Notify if build failed
+  build-failed:
+    if: ${{ github.event.workflow_run.conclusion == 'failure' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Build workflow failed
+        run: |
+          echo "❌ Build workflow failed. Tests skipped."
+          echo "Please check the Build H3 Libraries workflow for errors."
+          exit 1

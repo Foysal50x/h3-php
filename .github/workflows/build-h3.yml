@@ -1,0 +1,259 @@
+name: Build H3 Libraries
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'src/H3.php'
+      - 'scripts/build-h3.sh'
+      - '.github/workflows/build-h3.yml'
+  workflow_dispatch:
+    inputs:
+      h3_version:
+        description: 'H3 version to build (leave empty to use version from H3.php)'
+        required: false
+        default: ''
+
+jobs:
+  extract-version:
+    runs-on: ubuntu-latest
+    outputs:
+      h3_version: ${{ steps.get-version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract H3 version from H3.php
+        id: get-version
+        run: |
+          if [ -n "${{ github.event.inputs.h3_version }}" ]; then
+            VERSION="${{ github.event.inputs.h3_version }}"
+          else
+            VERSION=$(grep -oP "public const H3_VERSION = '\K[^']+" src/H3.php)
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Building H3 version: $VERSION"
+
+  build-macos-arm64:
+    needs: extract-version
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: brew install cmake
+
+      - name: Build H3 library
+        env:
+          H3_VERSION: ${{ needs.extract-version.outputs.h3_version }}
+        run: bash scripts/build-h3.sh
+
+      - name: List built files
+        run: find bin -type f -name "*.dylib" -o -name "*.so" -o -name "*.dll" 2>/dev/null || echo "No libraries found"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: libh3-darwin-arm64
+          path: bin/darwin-arm64/libh3.dylib
+          if-no-files-found: error
+
+  build-macos-x64:
+    needs: extract-version
+    runs-on: macos-13
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: brew install cmake
+
+      - name: Build H3 library
+        env:
+          H3_VERSION: ${{ needs.extract-version.outputs.h3_version }}
+        run: bash scripts/build-h3.sh
+
+      - name: List built files
+        run: find bin -type f -name "*.dylib" -o -name "*.so" -o -name "*.dll" 2>/dev/null || echo "No libraries found"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: libh3-darwin-x64
+          path: bin/darwin-x64/libh3.dylib
+          if-no-files-found: error
+
+  build-linux-x64:
+    needs: extract-version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y cmake build-essential
+
+      - name: Build H3 library
+        env:
+          H3_VERSION: ${{ needs.extract-version.outputs.h3_version }}
+        run: bash scripts/build-h3.sh
+
+      - name: List built files
+        run: find bin -type f -name "*.dylib" -o -name "*.so" -o -name "*.dll" 2>/dev/null || echo "No libraries found"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: libh3-linux-x64
+          path: bin/linux-x64/libh3.so
+          if-no-files-found: error
+
+  build-linux-arm64:
+    needs: extract-version
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y cmake build-essential
+
+      - name: Build H3 library
+        env:
+          H3_VERSION: ${{ needs.extract-version.outputs.h3_version }}
+        run: bash scripts/build-h3.sh
+
+      - name: List built files
+        run: find bin -type f -name "*.dylib" -o -name "*.so" -o -name "*.dll" 2>/dev/null || echo "No libraries found"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: libh3-linux-arm64
+          path: bin/linux-arm64/libh3.so
+          if-no-files-found: error
+
+  build-windows-x64:
+    needs: extract-version
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build H3 library
+        env:
+          H3_VERSION: ${{ needs.extract-version.outputs.h3_version }}
+        shell: pwsh
+        run: |
+          $version = $env:H3_VERSION
+          Write-Host "Building H3 version: $version"
+
+          git clone --depth 1 --branch "v$version" https://github.com/uber/h3 build-h3-temp
+          cd build-h3-temp
+          mkdir build
+          cd build
+
+          cmake -DCMAKE_BUILD_TYPE=Release `
+                -DBUILD_SHARED_LIBS=ON `
+                -DBUILD_TESTING=OFF `
+                -DENABLE_FORMAT=OFF `
+                -DENABLE_DOCS=OFF `
+                -DENABLE_LINTING=OFF `
+                ..
+
+          cmake --build . --config Release --target h3
+
+          New-Item -ItemType Directory -Force -Path "../../bin/windows-x64"
+          $dllPath = Get-ChildItem -Path . -Recurse -Filter "h3.dll" | Select-Object -First 1
+          if ($dllPath) {
+            Copy-Item $dllPath.FullName -Destination "../../bin/windows-x64/h3.dll"
+            Write-Host "Copied: $($dllPath.FullName) -> ../../bin/windows-x64/h3.dll"
+          } else {
+            Write-Error "h3.dll not found!"
+            exit 1
+          }
+
+      - name: List built files
+        shell: pwsh
+        run: Get-ChildItem -Path bin -Recurse -File
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: libh3-windows-x64
+          path: bin/windows-x64/h3.dll
+          if-no-files-found: error
+
+  commit-libraries:
+    needs: [build-macos-arm64, build-macos-x64, build-linux-x64, build-linux-arm64, build-windows-x64, extract-version]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create bin directory structure
+        run: |
+          mkdir -p bin/darwin-arm64
+          mkdir -p bin/darwin-x64
+          mkdir -p bin/linux-x64
+          mkdir -p bin/linux-arm64
+          mkdir -p bin/windows-x64
+
+      - name: Download darwin-arm64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: libh3-darwin-arm64
+          path: bin/darwin-arm64
+
+      - name: Download darwin-x64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: libh3-darwin-x64
+          path: bin/darwin-x64
+
+      - name: Download linux-x64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: libh3-linux-x64
+          path: bin/linux-x64
+
+      - name: Download linux-arm64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: libh3-linux-arm64
+          path: bin/linux-arm64
+
+      - name: Download windows-x64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: libh3-windows-x64
+          path: bin/windows-x64
+
+      - name: List all libraries
+        run: |
+          echo "=== All built libraries ==="
+          find bin -type f \( -name "*.dylib" -o -name "*.so" -o -name "*.dll" \) -exec ls -la {} \;
+
+      - name: Commit and push libraries
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+
+          # Remove .gitkeep files as we now have actual libraries
+          find bin -name ".gitkeep" -delete 2>/dev/null || true
+
+          git add bin/
+
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "chore: build H3 libraries v${{ needs.extract-version.outputs.h3_version }}
+
+          Built for:
+          - macOS ARM64 (Apple Silicon)
+          - macOS x64 (Intel)
+          - Linux x64
+          - Linux ARM64
+          - Windows x64
+
+          H3 Version: ${{ needs.extract-version.outputs.h3_version }}"
+
+            git push
+          fi

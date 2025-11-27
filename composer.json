@@ -1,0 +1,51 @@
+{
+    "name": "foysal50x/h3-php",
+    "description": "PHP FFI bindings for Uber's H3 hexagonal hierarchical geospatial indexing system",
+    "type": "library",
+    "license": "MIT",
+    "keywords": [
+        "h3",
+        "uber",
+        "geospatial",
+        "hexagonal",
+        "indexing",
+        "ffi",
+        "gis",
+        "geography",
+        "spatial"
+    ],
+    "authors": [
+        {
+            "name": "Foysal Ahmed"
+        }
+    ],
+    "require": {
+        "php": ">=8.1",
+        "ext-ffi": "*"
+    },
+    "require-dev": {
+        "phpunit/phpunit": "^10.0|^11.0",
+        "friendsofphp/php-cs-fixer": "^3.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "Foysal50x\\H3\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Foysal50x\\H3\\Tests\\": "tests/"
+        }
+    },
+    "scripts": {
+        "test": "phpunit",
+        "test-coverage": "phpunit --coverage-html coverage",
+        "format": "php-cs-fixer fix",
+        "build-h3": "bash scripts/build-h3.sh"
+    },
+    "config": {
+        "sort-packages": true
+    },
+    "minimum-stability": "stable",
+    "prefer-stable": true
+}
