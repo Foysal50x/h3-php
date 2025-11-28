@@ -21,11 +21,47 @@ class H3
 
     private static ?H3 $instance = null;
 
+    private static ?string $instanceLibraryPath = null;
+
     /**
      * H3 C library version that this package is compatible with.
      * This version is used when building the bundled H3 library.
      */
     public const H3_VERSION = '4.4.1';
+
+    /**
+     * Maximum allowed k value for grid operations to prevent memory exhaustion.
+     * k=500 results in ~751,501 cells which is reasonable for most use cases.
+     * Adjust via setMaxGridK() if needed for specific applications.
+     */
+    private static int $maxGridK = 500;
+
+    /**
+     * Maximum length for H3 string representation (15 hex chars + null terminator).
+     */
+    private const MAX_H3_STRING_LENGTH = 16;
+
+    /**
+     * Error code descriptions for better exception messages.
+     */
+    private const ERROR_MESSAGES = [
+        self::E_SUCCESS => 'Success',
+        self::E_FAILED => 'Operation failed',
+        self::E_DOMAIN => 'Argument out of domain',
+        self::E_LATLNG_DOMAIN => 'Latitude/longitude out of range',
+        self::E_RES_DOMAIN => 'Resolution out of range (must be 0-15)',
+        self::E_CELL_INVALID => 'Invalid H3 cell index',
+        self::E_DIR_EDGE_INVALID => 'Invalid directed edge index',
+        self::E_UNDIR_EDGE_INVALID => 'Invalid undirected edge index',
+        self::E_VERTEX_INVALID => 'Invalid vertex index',
+        self::E_PENTAGON => 'Pentagon distortion encountered',
+        self::E_DUPLICATE_INPUT => 'Duplicate input detected',
+        self::E_NOT_NEIGHBORS => 'Cells are not neighbors',
+        self::E_RES_MISMATCH => 'Resolution mismatch',
+        self::E_MEMORY_ALLOC => 'Memory allocation failed',
+        self::E_MEMORY_BOUNDS => 'Memory bounds exceeded',
+        self::E_OPTION_INVALID => 'Invalid option',
+    ];
 
     /**
      * H3 C library header definitions.
@@ -229,22 +265,69 @@ class H3
      *
      * @param string|null $libraryPath Path to the H3 shared library.
      * @return self
+     * @throws H3Exception If a different library path is requested than the existing instance.
      */
     public static function getInstance(?string $libraryPath = null): self
     {
-        if (self::$instance === null) {
-            self::$instance = new self($libraryPath);
+        if (self::$instance !== null) {
+            // Check if a different library path is being requested
+            if ($libraryPath !== null && self::$instanceLibraryPath !== $libraryPath) {
+                throw new H3Exception(
+                    sprintf(
+                        'H3 singleton already initialized with library path "%s". ' .
+                        'Cannot reinitialize with different path "%s". ' .
+                        'Call resetInstance() first if you need to change the library.',
+                        self::$instanceLibraryPath ?? 'auto-detected',
+                        $libraryPath
+                    ),
+                    self::E_FAILED
+                );
+            }
+            return self::$instance;
         }
+
+        self::$instance = new self($libraryPath);
+        self::$instanceLibraryPath = $libraryPath;
 
         return self::$instance;
     }
 
     /**
      * Reset the singleton instance.
+     * This allows reinitializing with a different library path.
      */
     public static function resetInstance(): void
     {
         self::$instance = null;
+        self::$instanceLibraryPath = null;
+    }
+
+    /**
+     * Set the maximum allowed k value for grid operations.
+     * This is a safety limit to prevent memory exhaustion.
+     *
+     * @param int $maxK Maximum k value (must be positive).
+     * @throws H3Exception If maxK is not positive.
+     */
+    public static function setMaxGridK(int $maxK): void
+    {
+        if ($maxK <= 0) {
+            throw new H3Exception(
+                'Maximum grid k value must be positive',
+                self::E_DOMAIN
+            );
+        }
+        self::$maxGridK = $maxK;
+    }
+
+    /**
+     * Get the current maximum allowed k value for grid operations.
+     *
+     * @return int Current maximum k value.
+     */
+    public static function getMaxGridK(): int
+    {
+        return self::$maxGridK;
     }
 
     /**
@@ -348,44 +431,69 @@ class H3
      */
     private function getSystemLibraryPaths(): array
     {
+        $paths = [];
+
         if (PHP_OS_FAMILY === 'Darwin') {
-            // macOS - Homebrew paths
-            return [
-                '/opt/homebrew/lib/libh3.dylib',           // Apple Silicon
-                '/usr/local/lib/libh3.dylib',              // Intel
-                '/opt/homebrew/Cellar/h3/4.1.0/lib/libh3.dylib',
+            // macOS - Homebrew paths (version-agnostic first)
+            $paths = [
+                '/opt/homebrew/lib/libh3.dylib',           // Apple Silicon (symlink, preferred)
+                '/usr/local/lib/libh3.dylib',              // Intel (symlink, preferred)
             ];
+
+            // Also check Homebrew Cellar for versioned installations
+            $cellarPaths = [
+                '/opt/homebrew/Cellar/h3',  // Apple Silicon
+                '/usr/local/Cellar/h3',     // Intel
+            ];
+
+            foreach ($cellarPaths as $cellarPath) {
+                if (is_dir($cellarPath)) {
+                    $versions = @scandir($cellarPath, SCANDIR_SORT_DESCENDING);
+                    if ($versions !== false) {
+                        foreach ($versions as $version) {
+                            if ($version !== '.' && $version !== '..') {
+                                $libPath = "$cellarPath/$version/lib/libh3.dylib";
+                                if (file_exists($libPath)) {
+                                    $paths[] = $libPath;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         } elseif (PHP_OS_FAMILY === 'Linux') {
             // Linux paths
-            return [
+            $paths = [
                 '/usr/lib/libh3.so',
                 '/usr/lib/x86_64-linux-gnu/libh3.so',
+                '/usr/lib/aarch64-linux-gnu/libh3.so',
                 '/usr/local/lib/libh3.so',
                 '/usr/lib64/libh3.so',
             ];
         } elseif (PHP_OS_FAMILY === 'Windows') {
             // Windows paths
-            return [
+            $paths = [
                 'C:\\Program Files\\H3\\bin\\h3.dll',
                 'h3.dll',
             ];
         }
 
-        return [];
+        return $paths;
     }
 
     /**
      * Convert latitude/longitude to H3 cell index.
      *
-     * @param float $lat Latitude in degrees.
-     * @param float $lng Longitude in degrees.
+     * @param float $lat Latitude in degrees (-90 to 90).
+     * @param float $lng Longitude in degrees (-180 to 180).
      * @param int $resolution Resolution (0-15).
      * @return int H3 cell index.
-     * @throws H3Exception If the operation fails.
+     * @throws H3Exception If the operation fails or coordinates are invalid.
      */
     public function latLngToCell(float $lat, float $lng, int $resolution): int
     {
         $this->validateResolution($resolution);
+        $this->validateCoordinates($lat, $lng);
 
         $latLng = $this->ffi->new('LatLng');
         $latLng->lat = deg2rad($lat);
@@ -395,7 +503,7 @@ class H3
         $error = $this->ffi->latLngToCell(FFI::addr($latLng), $resolution, FFI::addr($out));
 
         if ($error !== self::E_SUCCESS) {
-            throw new H3Exception("Failed to convert lat/lng to cell", $error);
+            $this->throwH3Exception("Failed to convert lat/lng to cell", $error);
         }
 
         return $out->cdata;
@@ -414,7 +522,7 @@ class H3
         $error = $this->ffi->cellToLatLng($cell, FFI::addr($latLng));
 
         if ($error !== self::E_SUCCESS) {
-            throw new H3Exception("Failed to convert cell to lat/lng", $error);
+            $this->throwH3Exception("Failed to convert cell to lat/lng", $error);
         }
 
         return [
@@ -436,7 +544,7 @@ class H3
         $error = $this->ffi->cellToBoundary($cell, FFI::addr($boundary));
 
         if ($error !== self::E_SUCCESS) {
-            throw new H3Exception("Failed to get cell boundary", $error);
+            $this->throwH3Exception("Failed to get cell boundary", $error);
         }
 
         $vertices = [];
@@ -482,10 +590,11 @@ class H3
     public function h3ToString(int $cell): string
     {
         $str = $this->ffi->new('char[17]');
+        FFI::memset($str, 0, 17);
         $error = $this->ffi->h3ToString($cell, $str, 17);
 
         if ($error !== self::E_SUCCESS) {
-            throw new H3Exception("Failed to convert H3 index to string", $error);
+            $this->throwH3Exception("Failed to convert H3 index to string", $error);
         }
 
         return FFI::string($str);
@@ -494,17 +603,19 @@ class H3
     /**
      * Convert string representation to H3 index.
      *
-     * @param string $str Hexadecimal string representation.
+     * @param string $str Hexadecimal string representation (up to 16 hex characters).
      * @return int H3 cell index.
-     * @throws H3Exception If the operation fails.
+     * @throws H3Exception If the string is invalid or the operation fails.
      */
     public function stringToH3(string $str): int
     {
+        $this->validateH3String($str);
+
         $out = $this->ffi->new('H3Index');
         $error = $this->ffi->stringToH3($str, FFI::addr($out));
 
         if ($error !== self::E_SUCCESS) {
-            throw new H3Exception("Failed to convert string to H3 index", $error);
+            $this->throwH3Exception("Failed to convert string to H3 index", $error);
         }
 
         return $out->cdata;
@@ -547,25 +658,27 @@ class H3
      * Get all cells within k distance of the origin cell (filled disk).
      *
      * @param int $origin Origin H3 cell index.
-     * @param int $k Grid distance.
+     * @param int $k Grid distance (must be non-negative and within configured limit).
      * @return int[] Array of H3 cell indices.
-     * @throws H3Exception If the operation fails.
+     * @throws H3Exception If the operation fails or k is invalid.
      */
     public function gridDisk(int $origin, int $k): array
     {
+        $this->validateGridK($k);
+
         $size = $this->ffi->new('int64_t');
         $error = $this->ffi->maxGridDiskSize($k, FFI::addr($size));
 
         if ($error !== self::E_SUCCESS) {
-            throw new H3Exception("Failed to get grid disk size", $error);
+            $this->throwH3Exception("Failed to get grid disk size", $error);
         }
 
         $maxSize = $size->cdata;
-        $out = $this->ffi->new("H3Index[$maxSize]");
+        $out = $this->createZeroedArray('H3Index', $maxSize);
         $error = $this->ffi->gridDisk($origin, $k, $out);
 
         if ($error !== self::E_SUCCESS) {
-            throw new H3Exception("Failed to get grid disk", $error);
+            $this->throwH3Exception("Failed to get grid disk", $error);
         }
 
         $cells = [];
@@ -582,26 +695,28 @@ class H3
      * Get all cells within k distance with their distances from origin.
      *
      * @param int $origin Origin H3 cell index.
-     * @param int $k Grid distance.
+     * @param int $k Grid distance (must be non-negative and within configured limit).
      * @return array<array{cell: int, distance: int}> Array of cells with distances.
-     * @throws H3Exception If the operation fails.
+     * @throws H3Exception If the operation fails or k is invalid.
      */
     public function gridDiskDistances(int $origin, int $k): array
     {
+        $this->validateGridK($k);
+
         $size = $this->ffi->new('int64_t');
         $error = $this->ffi->maxGridDiskSize($k, FFI::addr($size));
 
         if ($error !== self::E_SUCCESS) {
-            throw new H3Exception("Failed to get grid disk size", $error);
+            $this->throwH3Exception("Failed to get grid disk size", $error);
         }
 
         $maxSize = $size->cdata;
-        $out = $this->ffi->new("H3Index[$maxSize]");
-        $distances = $this->ffi->new("int[$maxSize]");
+        $out = $this->createZeroedArray('H3Index', $maxSize);
+        $distances = $this->createZeroedArray('int', $maxSize);
         $error = $this->ffi->gridDiskDistances($origin, $k, $out, $distances);
 
         if ($error !== self::E_SUCCESS) {
-            throw new H3Exception("Failed to get grid disk distances", $error);
+            $this->throwH3Exception("Failed to get grid disk distances", $error);
         }
 
         $result = [];
@@ -621,25 +736,27 @@ class H3
      * Get all cells in a hollow ring at exactly k distance from origin.
      *
      * @param int $origin Origin H3 cell index.
-     * @param int $k Grid distance.
+     * @param int $k Grid distance (must be non-negative and within configured limit).
      * @return int[] Array of H3 cell indices.
-     * @throws H3Exception If the operation fails.
+     * @throws H3Exception If the operation fails or k is invalid.
      */
     public function gridRing(int $origin, int $k): array
     {
+        $this->validateGridK($k);
+
         $size = $this->ffi->new('int64_t');
         $error = $this->ffi->maxGridRingSize($k, FFI::addr($size));
 
         if ($error !== self::E_SUCCESS) {
-            throw new H3Exception("Failed to get grid ring size", $error);
+            $this->throwH3Exception("Failed to get grid ring size", $error);
         }
 
         $maxSize = $size->cdata;
-        $out = $this->ffi->new("H3Index[$maxSize]");
+        $out = $this->createZeroedArray('H3Index', $maxSize);
         $error = $this->ffi->gridRing($origin, $k, $out);
 
         if ($error !== self::E_SUCCESS) {
-            throw new H3Exception("Failed to get grid ring", $error);
+            $this->throwH3Exception("Failed to get grid ring", $error);
         }
 
         $cells = [];
@@ -666,7 +783,7 @@ class H3
         $error = $this->ffi->gridDistance($origin, $destination, FFI::addr($distance));
 
         if ($error !== self::E_SUCCESS) {
-            throw new H3Exception("Failed to get grid distance", $error);
+            $this->throwH3Exception("Failed to get grid distance", $error);
         }
 
         return (int) $distance->cdata;
@@ -686,15 +803,15 @@ class H3
         $error = $this->ffi->gridPathCellsSize($start, $end, FFI::addr($size));
 
         if ($error !== self::E_SUCCESS) {
-            throw new H3Exception("Failed to get grid path size", $error);
+            $this->throwH3Exception("Failed to get grid path size", $error);
         }
 
         $pathSize = $size->cdata;
-        $out = $this->ffi->new("H3Index[$pathSize]");
+        $out = $this->createZeroedArray('H3Index', $pathSize);
         $error = $this->ffi->gridPathCells($start, $end, $out);
 
         if ($error !== self::E_SUCCESS) {
-            throw new H3Exception("Failed to get grid path cells", $error);
+            $this->throwH3Exception("Failed to get grid path cells", $error);
         }
 
         $cells = [];
@@ -711,17 +828,18 @@ class H3
      * @param int $cell H3 cell index.
      * @param int $parentRes Parent resolution (must be less than cell's resolution).
      * @return int Parent H3 cell index.
-     * @throws H3Exception If the operation fails.
+     * @throws H3Exception If the operation fails or resolution is invalid.
      */
     public function cellToParent(int $cell, int $parentRes): int
     {
         $this->validateResolution($parentRes);
+        $this->validateParentResolution($cell, $parentRes);
 
         $parent = $this->ffi->new('H3Index');
         $error = $this->ffi->cellToParent($cell, $parentRes, FFI::addr($parent));
 
         if ($error !== self::E_SUCCESS) {
-            throw new H3Exception("Failed to get parent cell", $error);
+            $this->throwH3Exception("Failed to get parent cell", $error);
         }
 
         return $parent->cdata;
@@ -733,25 +851,26 @@ class H3
      * @param int $cell H3 cell index.
      * @param int $childRes Child resolution (must be greater than cell's resolution).
      * @return int[] Array of child H3 cell indices.
-     * @throws H3Exception If the operation fails.
+     * @throws H3Exception If the operation fails or resolution is invalid.
      */
     public function cellToChildren(int $cell, int $childRes): array
     {
         $this->validateResolution($childRes);
+        $this->validateChildResolution($cell, $childRes);
 
         $size = $this->ffi->new('int64_t');
         $error = $this->ffi->cellToChildrenSize($cell, $childRes, FFI::addr($size));
 
         if ($error !== self::E_SUCCESS) {
-            throw new H3Exception("Failed to get children size", $error);
+            $this->throwH3Exception("Failed to get children size", $error);
         }
 
         $childrenCount = $size->cdata;
-        $children = $this->ffi->new("H3Index[$childrenCount]");
+        $children = $this->createZeroedArray('H3Index', $childrenCount);
         $error = $this->ffi->cellToChildren($cell, $childRes, $children);
 
         if ($error !== self::E_SUCCESS) {
-            throw new H3Exception("Failed to get children cells", $error);
+            $this->throwH3Exception("Failed to get children cells", $error);
         }
 
         $result = [];
@@ -766,19 +885,20 @@ class H3
      * Get the center child cell at a finer resolution.
      *
      * @param int $cell H3 cell index.
-     * @param int $childRes Child resolution.
+     * @param int $childRes Child resolution (must be greater than cell's resolution).
      * @return int Center child H3 cell index.
-     * @throws H3Exception If the operation fails.
+     * @throws H3Exception If the operation fails or resolution is invalid.
      */
     public function cellToCenterChild(int $cell, int $childRes): int
     {
         $this->validateResolution($childRes);
+        $this->validateChildResolution($cell, $childRes);
 
         $child = $this->ffi->new('H3Index');
         $error = $this->ffi->cellToCenterChild($cell, $childRes, FFI::addr($child));
 
         if ($error !== self::E_SUCCESS) {
-            throw new H3Exception("Failed to get center child", $error);
+            $this->throwH3Exception("Failed to get center child", $error);
         }
 
         return $child->cdata;
@@ -798,8 +918,8 @@ class H3
             return [];
         }
 
-        $cellSet = $this->ffi->new("H3Index[$numCells]");
-        $compactedSet = $this->ffi->new("H3Index[$numCells]");
+        $cellSet = $this->createZeroedArray('H3Index', $numCells);
+        $compactedSet = $this->createZeroedArray('H3Index', $numCells);
 
         foreach ($cells as $i => $cell) {
             $cellSet[$i] = $cell;
@@ -808,7 +928,7 @@ class H3
         $error = $this->ffi->compactCells($cellSet, $compactedSet, $numCells);
 
         if ($error !== self::E_SUCCESS) {
-            throw new H3Exception("Failed to compact cells", $error);
+            $this->throwH3Exception("Failed to compact cells", $error);
         }
 
         $result = [];
@@ -838,7 +958,7 @@ class H3
             return [];
         }
 
-        $compactedSet = $this->ffi->new("H3Index[$numCells]");
+        $compactedSet = $this->createZeroedArray('H3Index', $numCells);
         foreach ($cells as $i => $cell) {
             $compactedSet[$i] = $cell;
         }
@@ -847,15 +967,15 @@ class H3
         $error = $this->ffi->uncompactCellsSize($compactedSet, $numCells, $res, FFI::addr($outSize));
 
         if ($error !== self::E_SUCCESS) {
-            throw new H3Exception("Failed to get uncompact size", $error);
+            $this->throwH3Exception("Failed to get uncompact size", $error);
         }
 
         $maxCells = $outSize->cdata;
-        $cellSet = $this->ffi->new("H3Index[$maxCells]");
+        $cellSet = $this->createZeroedArray('H3Index', $maxCells);
         $error = $this->ffi->uncompactCells($compactedSet, $numCells, $cellSet, $maxCells, $res);
 
         if ($error !== self::E_SUCCESS) {
-            throw new H3Exception("Failed to uncompact cells", $error);
+            $this->throwH3Exception("Failed to uncompact cells", $error);
         }
 
         $result = [];
@@ -882,7 +1002,7 @@ class H3
         $error = $this->ffi->areNeighborCells($origin, $destination, FFI::addr($out));
 
         if ($error !== self::E_SUCCESS) {
-            throw new H3Exception("Failed to check neighbor cells", $error);
+            $this->throwH3Exception("Failed to check neighbor cells", $error);
         }
 
         return $out->cdata !== 0;
@@ -902,7 +1022,7 @@ class H3
         $error = $this->ffi->cellsToDirectedEdge($origin, $destination, FFI::addr($out));
 
         if ($error !== self::E_SUCCESS) {
-            throw new H3Exception("Failed to get directed edge", $error);
+            $this->throwH3Exception("Failed to get directed edge", $error);
         }
 
         return $out->cdata;
@@ -932,7 +1052,7 @@ class H3
         $error = $this->ffi->getDirectedEdgeOrigin($edge, FFI::addr($out));
 
         if ($error !== self::E_SUCCESS) {
-            throw new H3Exception("Failed to get edge origin", $error);
+            $this->throwH3Exception("Failed to get edge origin", $error);
         }
 
         return $out->cdata;
@@ -951,7 +1071,7 @@ class H3
         $error = $this->ffi->getDirectedEdgeDestination($edge, FFI::addr($out));
 
         if ($error !== self::E_SUCCESS) {
-            throw new H3Exception("Failed to get edge destination", $error);
+            $this->throwH3Exception("Failed to get edge destination", $error);
         }
 
         return $out->cdata;
@@ -966,11 +1086,11 @@ class H3
      */
     public function directedEdgeToCells(int $edge): array
     {
-        $cells = $this->ffi->new('H3Index[2]');
+        $cells = $this->createZeroedArray('H3Index', 2);
         $error = $this->ffi->directedEdgeToCells($edge, $cells);
 
         if ($error !== self::E_SUCCESS) {
-            throw new H3Exception("Failed to get edge cells", $error);
+            $this->throwH3Exception("Failed to get edge cells", $error);
         }
 
         return [
@@ -988,11 +1108,11 @@ class H3
      */
     public function originToDirectedEdges(int $origin): array
     {
-        $edges = $this->ffi->new('H3Index[6]');
+        $edges = $this->createZeroedArray('H3Index', 6);
         $error = $this->ffi->originToDirectedEdges($origin, $edges);
 
         if ($error !== self::E_SUCCESS) {
-            throw new H3Exception("Failed to get directed edges", $error);
+            $this->throwH3Exception("Failed to get directed edges", $error);
         }
 
         $result = [];
@@ -1018,7 +1138,7 @@ class H3
         $error = $this->ffi->directedEdgeToBoundary($edge, FFI::addr($boundary));
 
         if ($error !== self::E_SUCCESS) {
-            throw new H3Exception("Failed to get edge boundary", $error);
+            $this->throwH3Exception("Failed to get edge boundary", $error);
         }
 
         $vertices = [];
@@ -1038,15 +1158,17 @@ class H3
      * @param int $cell H3 cell index.
      * @param int $vertexNum Vertex number (0-5 for hexagons, 0-4 for pentagons).
      * @return int H3 vertex index.
-     * @throws H3Exception If the operation fails.
+     * @throws H3Exception If the operation fails or vertex number is invalid.
      */
     public function cellToVertex(int $cell, int $vertexNum): int
     {
+        $this->validateVertexNum($cell, $vertexNum);
+
         $out = $this->ffi->new('H3Index');
         $error = $this->ffi->cellToVertex($cell, $vertexNum, FFI::addr($out));
 
         if ($error !== self::E_SUCCESS) {
-            throw new H3Exception("Failed to get cell vertex", $error);
+            $this->throwH3Exception("Failed to get cell vertex", $error);
         }
 
         return $out->cdata;
@@ -1061,11 +1183,11 @@ class H3
      */
     public function cellToVertexes(int $cell): array
     {
-        $vertices = $this->ffi->new('H3Index[6]');
+        $vertices = $this->createZeroedArray('H3Index', 6);
         $error = $this->ffi->cellToVertexes($cell, $vertices);
 
         if ($error !== self::E_SUCCESS) {
-            throw new H3Exception("Failed to get cell vertices", $error);
+            $this->throwH3Exception("Failed to get cell vertices", $error);
         }
 
         $result = [];
@@ -1091,7 +1213,7 @@ class H3
         $error = $this->ffi->vertexToLatLng($vertex, FFI::addr($latLng));
 
         if ($error !== self::E_SUCCESS) {
-            throw new H3Exception("Failed to get vertex lat/lng", $error);
+            $this->throwH3Exception("Failed to get vertex lat/lng", $error);
         }
 
         return [
@@ -1148,7 +1270,7 @@ class H3
         $error = $this->ffi->getHexagonAreaAvgKm2($res, FFI::addr($out));
 
         if ($error !== self::E_SUCCESS) {
-            throw new H3Exception("Failed to get hexagon area", $error);
+            $this->throwH3Exception("Failed to get hexagon area", $error);
         }
 
         return $out->cdata;
@@ -1169,7 +1291,7 @@ class H3
         $error = $this->ffi->getHexagonAreaAvgM2($res, FFI::addr($out));
 
         if ($error !== self::E_SUCCESS) {
-            throw new H3Exception("Failed to get hexagon area", $error);
+            $this->throwH3Exception("Failed to get hexagon area", $error);
         }
 
         return $out->cdata;
@@ -1188,7 +1310,7 @@ class H3
         $error = $this->ffi->cellAreaKm2($cell, FFI::addr($out));
 
         if ($error !== self::E_SUCCESS) {
-            throw new H3Exception("Failed to get cell area", $error);
+            $this->throwH3Exception("Failed to get cell area", $error);
         }
 
         return $out->cdata;
@@ -1207,7 +1329,7 @@ class H3
         $error = $this->ffi->cellAreaM2($cell, FFI::addr($out));
 
         if ($error !== self::E_SUCCESS) {
-            throw new H3Exception("Failed to get cell area", $error);
+            $this->throwH3Exception("Failed to get cell area", $error);
         }
 
         return $out->cdata;
@@ -1226,7 +1348,7 @@ class H3
         $error = $this->ffi->cellAreaRads2($cell, FFI::addr($out));
 
         if ($error !== self::E_SUCCESS) {
-            throw new H3Exception("Failed to get cell area", $error);
+            $this->throwH3Exception("Failed to get cell area", $error);
         }
 
         return $out->cdata;
@@ -1247,7 +1369,7 @@ class H3
         $error = $this->ffi->getHexagonEdgeLengthAvgKm($res, FFI::addr($out));
 
         if ($error !== self::E_SUCCESS) {
-            throw new H3Exception("Failed to get edge length", $error);
+            $this->throwH3Exception("Failed to get edge length", $error);
         }
 
         return $out->cdata;
@@ -1268,7 +1390,7 @@ class H3
         $error = $this->ffi->getHexagonEdgeLengthAvgM($res, FFI::addr($out));
 
         if ($error !== self::E_SUCCESS) {
-            throw new H3Exception("Failed to get edge length", $error);
+            $this->throwH3Exception("Failed to get edge length", $error);
         }
 
         return $out->cdata;
@@ -1287,7 +1409,7 @@ class H3
         $error = $this->ffi->edgeLengthKm($edge, FFI::addr($out));
 
         if ($error !== self::E_SUCCESS) {
-            throw new H3Exception("Failed to get edge length", $error);
+            $this->throwH3Exception("Failed to get edge length", $error);
         }
 
         return $out->cdata;
@@ -1306,7 +1428,7 @@ class H3
         $error = $this->ffi->edgeLengthM($edge, FFI::addr($out));
 
         if ($error !== self::E_SUCCESS) {
-            throw new H3Exception("Failed to get edge length", $error);
+            $this->throwH3Exception("Failed to get edge length", $error);
         }
 
         return $out->cdata;
@@ -1325,7 +1447,7 @@ class H3
         $error = $this->ffi->edgeLengthRads($edge, FFI::addr($out));
 
         if ($error !== self::E_SUCCESS) {
-            throw new H3Exception("Failed to get edge length", $error);
+            $this->throwH3Exception("Failed to get edge length", $error);
         }
 
         return $out->cdata;
@@ -1346,7 +1468,7 @@ class H3
         $error = $this->ffi->getNumCells($res, FFI::addr($out));
 
         if ($error !== self::E_SUCCESS) {
-            throw new H3Exception("Failed to get number of cells", $error);
+            $this->throwH3Exception("Failed to get number of cells", $error);
         }
 
         return (int) $out->cdata;
@@ -1361,11 +1483,11 @@ class H3
     public function getRes0Cells(): array
     {
         $count = self::RES0_CELL_COUNT;
-        $out = $this->ffi->new("H3Index[$count]");
+        $out = $this->createZeroedArray('H3Index', $count);
         $error = $this->ffi->getRes0Cells($out);
 
         if ($error !== self::E_SUCCESS) {
-            throw new H3Exception("Failed to get res 0 cells", $error);
+            $this->throwH3Exception("Failed to get res 0 cells", $error);
         }
 
         $cells = [];
@@ -1388,11 +1510,11 @@ class H3
         $this->validateResolution($res);
 
         $count = self::PENTAGON_COUNT;
-        $out = $this->ffi->new("H3Index[$count]");
+        $out = $this->createZeroedArray('H3Index', $count);
         $error = $this->ffi->getPentagons($res, $out);
 
         if ($error !== self::E_SUCCESS) {
-            throw new H3Exception("Failed to get pentagons", $error);
+            $this->throwH3Exception("Failed to get pentagons", $error);
         }
 
         $cells = [];
@@ -1406,14 +1528,18 @@ class H3
     /**
      * Get the great circle distance between two coordinates in kilometers.
      *
-     * @param float $lat1 Latitude of first point in degrees.
-     * @param float $lng1 Longitude of first point in degrees.
-     * @param float $lat2 Latitude of second point in degrees.
-     * @param float $lng2 Longitude of second point in degrees.
+     * @param float $lat1 Latitude of first point in degrees (-90 to 90).
+     * @param float $lng1 Longitude of first point in degrees (-180 to 180).
+     * @param float $lat2 Latitude of second point in degrees (-90 to 90).
+     * @param float $lng2 Longitude of second point in degrees (-180 to 180).
      * @return float Distance in km.
+     * @throws H3Exception If coordinates are invalid.
      */
     public function greatCircleDistanceKm(float $lat1, float $lng1, float $lat2, float $lng2): float
     {
+        $this->validateCoordinates($lat1, $lng1);
+        $this->validateCoordinates($lat2, $lng2);
+
         $a = $this->ffi->new('LatLng');
         $a->lat = deg2rad($lat1);
         $a->lng = deg2rad($lng1);
@@ -1428,14 +1554,18 @@ class H3
     /**
      * Get the great circle distance between two coordinates in meters.
      *
-     * @param float $lat1 Latitude of first point in degrees.
-     * @param float $lng1 Longitude of first point in degrees.
-     * @param float $lat2 Latitude of second point in degrees.
-     * @param float $lng2 Longitude of second point in degrees.
+     * @param float $lat1 Latitude of first point in degrees (-90 to 90).
+     * @param float $lng1 Longitude of first point in degrees (-180 to 180).
+     * @param float $lat2 Latitude of second point in degrees (-90 to 90).
+     * @param float $lng2 Longitude of second point in degrees (-180 to 180).
      * @return float Distance in m.
+     * @throws H3Exception If coordinates are invalid.
      */
     public function greatCircleDistanceM(float $lat1, float $lng1, float $lat2, float $lng2): float
     {
+        $this->validateCoordinates($lat1, $lng1);
+        $this->validateCoordinates($lat2, $lng2);
+
         $a = $this->ffi->new('LatLng');
         $a->lat = deg2rad($lat1);
         $a->lng = deg2rad($lng1);
@@ -1450,14 +1580,18 @@ class H3
     /**
      * Get the great circle distance between two coordinates in radians.
      *
-     * @param float $lat1 Latitude of first point in degrees.
-     * @param float $lng1 Longitude of first point in degrees.
-     * @param float $lat2 Latitude of second point in degrees.
-     * @param float $lng2 Longitude of second point in degrees.
+     * @param float $lat1 Latitude of first point in degrees (-90 to 90).
+     * @param float $lng1 Longitude of first point in degrees (-180 to 180).
+     * @param float $lat2 Latitude of second point in degrees (-90 to 90).
+     * @param float $lng2 Longitude of second point in degrees (-180 to 180).
      * @return float Distance in radians.
+     * @throws H3Exception If coordinates are invalid.
      */
     public function greatCircleDistanceRads(float $lat1, float $lng1, float $lat2, float $lng2): float
     {
+        $this->validateCoordinates($lat1, $lng1);
+        $this->validateCoordinates($lat2, $lng2);
+
         $a = $this->ffi->new('LatLng');
         $a->lat = deg2rad($lat1);
         $a->lng = deg2rad($lng1);
@@ -1484,7 +1618,7 @@ class H3
         $error = $this->ffi->cellToLocalIj($origin, $cell, $mode, FFI::addr($ij));
 
         if ($error !== self::E_SUCCESS) {
-            throw new H3Exception("Failed to convert cell to local IJ", $error);
+            $this->throwH3Exception("Failed to convert cell to local IJ", $error);
         }
 
         return [
@@ -1513,7 +1647,7 @@ class H3
         $error = $this->ffi->localIjToCell($origin, FFI::addr($ij), $mode, FFI::addr($out));
 
         if ($error !== self::E_SUCCESS) {
-            throw new H3Exception("Failed to convert local IJ to cell", $error);
+            $this->throwH3Exception("Failed to convert local IJ to cell", $error);
         }
 
         return $out->cdata;
@@ -1532,11 +1666,11 @@ class H3
         $error = $this->ffi->maxFaceCount($cell, FFI::addr($maxFaces));
 
         if ($error !== self::E_SUCCESS) {
-            throw new H3Exception("Failed to get max face count", $error);
+            $this->throwH3Exception("Failed to get max face count", $error);
         }
 
         $count = $maxFaces->cdata;
-        $faces = $this->ffi->new("int[$count]");
+        $faces = $this->createZeroedArray('int', $count);
 
         // Initialize to -1 (unused face indicator)
         for ($i = 0; $i < $count; $i++) {
@@ -1546,7 +1680,7 @@ class H3
         $error = $this->ffi->getIcosahedronFaces($cell, $faces);
 
         if ($error !== self::E_SUCCESS) {
-            throw new H3Exception("Failed to get icosahedron faces", $error);
+            $this->throwH3Exception("Failed to get icosahedron faces", $error);
         }
 
         $result = [];
@@ -1573,6 +1707,217 @@ class H3
                 self::E_RES_DOMAIN
             );
         }
+    }
+
+    /**
+     * Validate latitude and longitude values.
+     *
+     * @param float $lat Latitude in degrees.
+     * @param float $lng Longitude in degrees.
+     * @throws H3Exception If coordinates are invalid (NaN, Inf, or out of range).
+     */
+    private function validateCoordinates(float $lat, float $lng): void
+    {
+        if (is_nan($lat) || is_nan($lng)) {
+            throw new H3Exception(
+                'Coordinates cannot be NaN',
+                self::E_LATLNG_DOMAIN
+            );
+        }
+
+        if (is_infinite($lat) || is_infinite($lng)) {
+            throw new H3Exception(
+                'Coordinates cannot be infinite',
+                self::E_LATLNG_DOMAIN
+            );
+        }
+
+        if ($lat < -90.0 || $lat > 90.0) {
+            throw new H3Exception(
+                "Latitude must be between -90 and 90 degrees, got: $lat",
+                self::E_LATLNG_DOMAIN
+            );
+        }
+
+        if ($lng < -180.0 || $lng > 180.0) {
+            throw new H3Exception(
+                "Longitude must be between -180 and 180 degrees, got: $lng",
+                self::E_LATLNG_DOMAIN
+            );
+        }
+    }
+
+    /**
+     * Validate the k parameter for grid operations.
+     *
+     * @param int $k Grid distance.
+     * @throws H3Exception If k is negative or exceeds the maximum allowed value.
+     */
+    private function validateGridK(int $k): void
+    {
+        if ($k < 0) {
+            throw new H3Exception(
+                "Grid distance k cannot be negative, got: $k",
+                self::E_DOMAIN
+            );
+        }
+
+        if ($k > self::$maxGridK) {
+            throw new H3Exception(
+                sprintf(
+                    'Grid distance k=%d exceeds maximum allowed value of %d. ' .
+                    'This limit prevents memory exhaustion. Use H3::setMaxGridK() to increase if needed.',
+                    $k,
+                    self::$maxGridK
+                ),
+                self::E_DOMAIN
+            );
+        }
+    }
+
+    /**
+     * Validate an H3 string representation before parsing.
+     *
+     * @param string $str H3 string to validate.
+     * @throws H3Exception If the string is invalid.
+     */
+    private function validateH3String(string $str): void
+    {
+        // Check for null bytes which could cause truncation in C
+        if (strpos($str, "\0") !== false) {
+            throw new H3Exception(
+                'H3 string cannot contain null bytes',
+                self::E_FAILED
+            );
+        }
+
+        // Check length (H3 index is 15 hex chars max)
+        $len = strlen($str);
+        if ($len === 0) {
+            throw new H3Exception(
+                'H3 string cannot be empty',
+                self::E_FAILED
+            );
+        }
+
+        if ($len > self::MAX_H3_STRING_LENGTH) {
+            throw new H3Exception(
+                sprintf(
+                    'H3 string too long: %d characters (maximum is %d)',
+                    $len,
+                    self::MAX_H3_STRING_LENGTH
+                ),
+                self::E_FAILED
+            );
+        }
+
+        // Validate hex characters only
+        if (!ctype_xdigit($str)) {
+            throw new H3Exception(
+                'H3 string must contain only hexadecimal characters (0-9, a-f, A-F)',
+                self::E_FAILED
+            );
+        }
+    }
+
+    /**
+     * Validate vertex number for cell vertex operations.
+     *
+     * @param int $cell H3 cell index.
+     * @param int $vertexNum Vertex number.
+     * @throws H3Exception If vertex number is invalid.
+     */
+    private function validateVertexNum(int $cell, int $vertexNum): void
+    {
+        $maxVertex = $this->isPentagon($cell) ? 4 : 5;
+
+        if ($vertexNum < 0 || $vertexNum > $maxVertex) {
+            throw new H3Exception(
+                sprintf(
+                    'Vertex number must be between 0 and %d for this cell, got: %d',
+                    $maxVertex,
+                    $vertexNum
+                ),
+                self::E_DOMAIN
+            );
+        }
+    }
+
+    /**
+     * Validate that child resolution is finer than parent resolution.
+     *
+     * @param int $cell Parent cell.
+     * @param int $childRes Child resolution.
+     * @throws H3Exception If child resolution is not finer than parent.
+     */
+    private function validateChildResolution(int $cell, int $childRes): void
+    {
+        $parentRes = $this->getResolution($cell);
+
+        if ($childRes <= $parentRes) {
+            throw new H3Exception(
+                sprintf(
+                    'Child resolution (%d) must be greater than parent resolution (%d)',
+                    $childRes,
+                    $parentRes
+                ),
+                self::E_RES_MISMATCH
+            );
+        }
+    }
+
+    /**
+     * Validate that parent resolution is coarser than cell resolution.
+     *
+     * @param int $cell Child cell.
+     * @param int $parentRes Parent resolution.
+     * @throws H3Exception If parent resolution is not coarser than cell.
+     */
+    private function validateParentResolution(int $cell, int $parentRes): void
+    {
+        $cellRes = $this->getResolution($cell);
+
+        if ($parentRes >= $cellRes) {
+            throw new H3Exception(
+                sprintf(
+                    'Parent resolution (%d) must be less than cell resolution (%d)',
+                    $parentRes,
+                    $cellRes
+                ),
+                self::E_RES_MISMATCH
+            );
+        }
+    }
+
+    /**
+     * Create and zero-initialize an FFI array.
+     *
+     * @param string $type C type for the array elements (e.g., 'H3Index', 'int').
+     * @param int $size Number of elements.
+     * @return FFI\CData The zero-initialized array.
+     */
+    private function createZeroedArray(string $type, int $size): FFI\CData
+    {
+        $array = $this->ffi->new("{$type}[$size]");
+        FFI::memset($array, 0, FFI::sizeof($array));
+        return $array;
+    }
+
+    /**
+     * Throw an H3Exception with a descriptive error message.
+     *
+     * @param string $message Base error message.
+     * @param int $errorCode H3 error code.
+     * @throws H3Exception Always throws.
+     * @return never
+     */
+    private function throwH3Exception(string $message, int $errorCode): never
+    {
+        $errorDesc = self::ERROR_MESSAGES[$errorCode] ?? "Unknown error code: $errorCode";
+        throw new H3Exception(
+            "$message: $errorDesc (code: $errorCode)",
+            $errorCode
+        );
     }
 
     /**

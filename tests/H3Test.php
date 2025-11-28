@@ -564,4 +564,255 @@ class H3Test extends TestCase
         $this->expectException(H3Exception::class);
         $this->h3->latLngToCell(37.7749, -122.4194, -1);
     }
+
+    // ===========================================
+    // Input Validation Tests
+    // ===========================================
+
+    public function testNanLatitudeThrowsException(): void
+    {
+        $this->expectException(H3Exception::class);
+        $this->expectExceptionMessage('NaN');
+        $this->h3->latLngToCell(NAN, -122.4194, 9);
+    }
+
+    public function testNanLongitudeThrowsException(): void
+    {
+        $this->expectException(H3Exception::class);
+        $this->expectExceptionMessage('NaN');
+        $this->h3->latLngToCell(37.7749, NAN, 9);
+    }
+
+    public function testInfiniteLatitudeThrowsException(): void
+    {
+        $this->expectException(H3Exception::class);
+        $this->expectExceptionMessage('infinite');
+        $this->h3->latLngToCell(INF, -122.4194, 9);
+    }
+
+    public function testInfiniteLongitudeThrowsException(): void
+    {
+        $this->expectException(H3Exception::class);
+        $this->expectExceptionMessage('infinite');
+        $this->h3->latLngToCell(37.7749, -INF, 9);
+    }
+
+    public function testOutOfRangeLatitudeThrowsException(): void
+    {
+        $this->expectException(H3Exception::class);
+        $this->expectExceptionMessage('Latitude');
+        $this->h3->latLngToCell(91.0, -122.4194, 9);
+    }
+
+    public function testOutOfRangeLongitudeThrowsException(): void
+    {
+        $this->expectException(H3Exception::class);
+        $this->expectExceptionMessage('Longitude');
+        $this->h3->latLngToCell(37.7749, 181.0, 9);
+    }
+
+    public function testStringToH3WithNullByteThrowsException(): void
+    {
+        $this->expectException(H3Exception::class);
+        $this->expectExceptionMessage('null bytes');
+        $this->h3->stringToH3("8928308280fffff\0");
+    }
+
+    public function testStringToH3WithEmptyStringThrowsException(): void
+    {
+        $this->expectException(H3Exception::class);
+        $this->expectExceptionMessage('empty');
+        $this->h3->stringToH3('');
+    }
+
+    public function testStringToH3WithTooLongStringThrowsException(): void
+    {
+        $this->expectException(H3Exception::class);
+        $this->expectExceptionMessage('too long');
+        $this->h3->stringToH3('12345678901234567'); // 17 chars
+    }
+
+    public function testStringToH3WithInvalidCharsThrowsException(): void
+    {
+        $this->expectException(H3Exception::class);
+        $this->expectExceptionMessage('hexadecimal');
+        $this->h3->stringToH3('invalid!hex');
+    }
+
+    // ===========================================
+    // Grid K Limit Tests
+    // ===========================================
+
+    public function testGridDiskWithNegativeKThrowsException(): void
+    {
+        $cell = $this->h3->latLngToCell(37.7749, -122.4194, 9);
+        $this->expectException(H3Exception::class);
+        $this->expectExceptionMessage('negative');
+        $this->h3->gridDisk($cell, -1);
+    }
+
+    public function testGridDiskWithExcessiveKThrowsException(): void
+    {
+        $cell = $this->h3->latLngToCell(37.7749, -122.4194, 9);
+        $originalMax = H3::getMaxGridK();
+
+        try {
+            H3::setMaxGridK(10);
+            $this->expectException(H3Exception::class);
+            $this->expectExceptionMessage('exceeds maximum');
+            $this->h3->gridDisk($cell, 20);
+        } finally {
+            H3::setMaxGridK($originalMax);
+        }
+    }
+
+    public function testSetMaxGridKWithZeroThrowsException(): void
+    {
+        $this->expectException(H3Exception::class);
+        $this->expectExceptionMessage('positive');
+        H3::setMaxGridK(0);
+    }
+
+    public function testSetMaxGridKWithNegativeThrowsException(): void
+    {
+        $this->expectException(H3Exception::class);
+        $this->expectExceptionMessage('positive');
+        H3::setMaxGridK(-5);
+    }
+
+    public function testGetAndSetMaxGridK(): void
+    {
+        $originalMax = H3::getMaxGridK();
+
+        try {
+            H3::setMaxGridK(500);
+            $this->assertEquals(500, H3::getMaxGridK());
+
+            H3::setMaxGridK(2000);
+            $this->assertEquals(2000, H3::getMaxGridK());
+        } finally {
+            H3::setMaxGridK($originalMax);
+        }
+    }
+
+    // ===========================================
+    // Resolution Relationship Tests
+    // ===========================================
+
+    public function testCellToChildrenWithInvalidResolutionThrowsException(): void
+    {
+        $cell = $this->h3->latLngToCell(37.7749, -122.4194, 9);
+        $this->expectException(H3Exception::class);
+        $this->expectExceptionMessage('greater than');
+        $this->h3->cellToChildren($cell, 5); // 5 < 9
+    }
+
+    public function testCellToChildrenWithSameResolutionThrowsException(): void
+    {
+        $cell = $this->h3->latLngToCell(37.7749, -122.4194, 9);
+        $this->expectException(H3Exception::class);
+        $this->expectExceptionMessage('greater than');
+        $this->h3->cellToChildren($cell, 9); // Same resolution
+    }
+
+    public function testCellToCenterChildWithInvalidResolutionThrowsException(): void
+    {
+        $cell = $this->h3->latLngToCell(37.7749, -122.4194, 9);
+        $this->expectException(H3Exception::class);
+        $this->expectExceptionMessage('greater than');
+        $this->h3->cellToCenterChild($cell, 8); // 8 < 9
+    }
+
+    public function testCellToParentWithInvalidResolutionThrowsException(): void
+    {
+        $cell = $this->h3->latLngToCell(37.7749, -122.4194, 5);
+        $this->expectException(H3Exception::class);
+        $this->expectExceptionMessage('less than');
+        $this->h3->cellToParent($cell, 10); // 10 > 5
+    }
+
+    public function testCellToParentWithSameResolutionThrowsException(): void
+    {
+        $cell = $this->h3->latLngToCell(37.7749, -122.4194, 5);
+        $this->expectException(H3Exception::class);
+        $this->expectExceptionMessage('less than');
+        $this->h3->cellToParent($cell, 5); // Same resolution
+    }
+
+    // ===========================================
+    // Vertex Validation Tests
+    // ===========================================
+
+    public function testCellToVertexWithInvalidVertexNumThrowsException(): void
+    {
+        $cell = $this->h3->latLngToCell(37.7749, -122.4194, 9);
+        $this->expectException(H3Exception::class);
+        $this->expectExceptionMessage('Vertex number');
+        $this->h3->cellToVertex($cell, 10); // Invalid vertex number
+    }
+
+    public function testCellToVertexWithNegativeVertexNumThrowsException(): void
+    {
+        $cell = $this->h3->latLngToCell(37.7749, -122.4194, 9);
+        $this->expectException(H3Exception::class);
+        $this->expectExceptionMessage('Vertex number');
+        $this->h3->cellToVertex($cell, -1);
+    }
+
+    // ===========================================
+    // Singleton Path Tests
+    // ===========================================
+
+    public function testGetInstanceWithDifferentPathThrowsException(): void
+    {
+        // First, reset any existing instance
+        H3::resetInstance();
+
+        // Get instance with default path
+        H3::getInstance();
+
+        // Try to get instance with different path - should throw
+        $this->expectException(H3Exception::class);
+        $this->expectExceptionMessage('already initialized');
+        H3::getInstance('/different/path/libh3.so');
+    }
+
+    public function testGetInstanceAfterResetAllowsNewPath(): void
+    {
+        H3::resetInstance();
+
+        // This should work - getting instance without explicit path
+        $instance = H3::getInstance();
+        $this->assertInstanceOf(H3::class, $instance);
+
+        // Reset and verify we can get a new instance
+        H3::resetInstance();
+        $instance2 = H3::getInstance();
+        $this->assertInstanceOf(H3::class, $instance2);
+    }
+
+    // ===========================================
+    // Great Circle Distance Validation Tests
+    // ===========================================
+
+    public function testGreatCircleDistanceWithNanThrowsException(): void
+    {
+        $this->expectException(H3Exception::class);
+        $this->expectExceptionMessage('NaN');
+        $this->h3->greatCircleDistanceKm(NAN, -74.0060, 34.0522, -118.2437);
+    }
+
+    public function testGreatCircleDistanceWithInfiniteThrowsException(): void
+    {
+        $this->expectException(H3Exception::class);
+        $this->expectExceptionMessage('infinite');
+        $this->h3->greatCircleDistanceM(40.7128, INF, 34.0522, -118.2437);
+    }
+
+    public function testGreatCircleDistanceWithOutOfRangeThrowsException(): void
+    {
+        $this->expectException(H3Exception::class);
+        $this->expectExceptionMessage('Latitude');
+        $this->h3->greatCircleDistanceRads(100.0, -74.0060, 34.0522, -118.2437);
+    }
 }

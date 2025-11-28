@@ -284,8 +284,61 @@ For convenience, you can use the singleton pattern:
 $h3 = H3::getInstance();
 // ... use $h3 ...
 
-// Reset if needed
+// Reset if needed (required before using a different library path)
 H3::resetInstance();
+```
+
+**Note:** If you try to get an instance with a different library path than the existing singleton, an exception will be thrown. Call `resetInstance()` first if you need to change the library path.
+
+## Security & Safety Features
+
+This library includes several security and safety measures to prevent common FFI-related vulnerabilities:
+
+### Input Validation
+
+All user inputs are validated before being passed to the C library:
+
+```php
+// Coordinate validation (rejects NaN, Inf, out of range)
+$h3->latLngToCell(NAN, 0.0, 9);  // Throws H3Exception
+
+// H3 string validation (rejects null bytes, invalid hex, too long)
+$h3->stringToH3("invalid!");     // Throws H3Exception
+$h3->stringToH3("abc\0def");     // Throws H3Exception (null byte)
+
+// Resolution relationship validation
+$h3->cellToChildren($cell, 3);   // Throws if cell resolution >= 3
+$h3->cellToParent($cell, 10);    // Throws if cell resolution <= 10
+```
+
+### Memory Safety
+
+Grid operations have configurable limits to prevent memory exhaustion:
+
+```php
+// Default max k value is 500 (results in ~751,501 cells)
+$h3->gridDisk($cell, 1000);  // Throws H3Exception
+
+// Adjust the limit if needed for your use case
+H3::setMaxGridK(1000);
+$h3->gridDisk($cell, 1000);  // Now works
+
+// Check current limit
+$maxK = H3::getMaxGridK();
+```
+
+### Descriptive Error Messages
+
+Exceptions include detailed error information:
+
+```php
+try {
+    $h3->cellToChildren($cell, 3);
+} catch (H3Exception $e) {
+    // "Failed to get children cells: Resolution mismatch (code: 12)"
+    echo $e->getMessage();
+    echo $e->getCode();  // H3 error code
+}
 ```
 
 ## Resolution Guide
