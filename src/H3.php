@@ -65,7 +65,7 @@ class H3
 
     /**
      * H3 C library header definitions.
-     * Based on H3 v4.1.0
+     * Based on H3 v4.4.1
      */
     private const H3_HEADER = <<<'HEADER'
     typedef uint64_t H3Index;
@@ -118,7 +118,6 @@ class H3
     H3Error maxGridDiskSize(int k, int64_t *out);
     H3Error gridDiskDistances(H3Index origin, int k, H3Index *out, int *distances);
     H3Error gridRing(H3Index origin, int k, H3Index *out);
-    H3Error gridRingUnsafe(H3Index origin, int k, H3Index *out);
     H3Error maxGridRingSize(int k, int64_t *out);
     H3Error gridPathCells(H3Index start, H3Index end, H3Index *out);
     H3Error gridPathCellsSize(H3Index start, H3Index end, int64_t *size);
@@ -174,6 +173,10 @@ class H3
     double greatCircleDistanceKm(const LatLng *a, const LatLng *b);
     double greatCircleDistanceM(const LatLng *a, const LatLng *b);
     double greatCircleDistanceRads(const LatLng *a, const LatLng *b);
+
+    // Polygon functions (v4.x)
+    H3Error maxPolygonToCellsSize(const GeoPolygon *geoPolygon, int res, uint32_t flags, int64_t *out);
+    H3Error polygonToCells(const GeoPolygon *geoPolygon, int res, uint32_t flags, H3Index *out);
     HEADER;
 
     /**
@@ -213,6 +216,15 @@ class H3
 
     /**
      * Create a new H3 instance.
+     *
+     * Example:
+     * ```php
+     * // Auto-detect library path
+     * $h3 = new H3();
+     *
+     * // Or specify a custom library path
+     * $h3 = new H3('/usr/local/lib/libh3.so');
+     * ```
      *
      * @param string|null $libraryPath Path to the H3 shared library. If null, will attempt to auto-detect.
      * @throws H3Exception If the FFI extension is not available or H3 library cannot be loaded.
@@ -263,6 +275,19 @@ class H3
     /**
      * Get the singleton instance of H3.
      *
+     * Use this method when you want to reuse the same H3 instance across your application
+     * to avoid the overhead of creating multiple FFI connections.
+     *
+     * Example:
+     * ```php
+     * // Get or create singleton instance
+     * $h3 = H3::getInstance();
+     *
+     * // Use in another part of your application
+     * $sameInstance = H3::getInstance();
+     * var_dump($h3 === $sameInstance); // true
+     * ```
+     *
      * @param string|null $libraryPath Path to the H3 shared library.
      * @return self
      * @throws H3Exception If a different library path is requested than the existing instance.
@@ -294,7 +319,17 @@ class H3
 
     /**
      * Reset the singleton instance.
-     * This allows reinitializing with a different library path.
+     *
+     * This allows reinitializing with a different library path. Useful for testing
+     * or when you need to switch between different H3 library versions.
+     *
+     * Example:
+     * ```php
+     * $h3 = H3::getInstance();
+     * H3::resetInstance();
+     * // Now you can create a new instance with a different library path
+     * $h3New = H3::getInstance('/path/to/other/libh3.so');
+     * ```
      */
     public static function resetInstance(): void
     {
@@ -304,7 +339,18 @@ class H3
 
     /**
      * Set the maximum allowed k value for grid operations.
-     * This is a safety limit to prevent memory exhaustion.
+     *
+     * This is a safety limit to prevent memory exhaustion. The default is 500,
+     * which results in approximately 751,501 cells for gridDisk operations.
+     *
+     * Example:
+     * ```php
+     * // Increase limit for large-scale operations
+     * H3::setMaxGridK(1000);
+     *
+     * $h3 = new H3();
+     * $cells = $h3->gridDisk($origin, 800); // Now allowed
+     * ```
      *
      * @param int $maxK Maximum k value (must be positive).
      * @throws H3Exception If maxK is not positive.
@@ -322,6 +368,12 @@ class H3
 
     /**
      * Get the current maximum allowed k value for grid operations.
+     *
+     * Example:
+     * ```php
+     * $maxK = H3::getMaxGridK();
+     * echo "Maximum k value: $maxK"; // Default: 500
+     * ```
      *
      * @return int Current maximum k value.
      */
@@ -484,9 +536,25 @@ class H3
     /**
      * Convert latitude/longitude to H3 cell index.
      *
+     * This is the primary method for indexing a geographic point into the H3 system.
+     * Higher resolutions provide more precision but smaller cell sizes.
+     *
+     * Example:
+     * ```php
+     * $h3 = new H3();
+     *
+     * // Index San Francisco at resolution 9 (~174m edge length)
+     * $cell = $h3->latLngToCell(37.7749, -122.4194, 9);
+     * echo $h3->h3ToString($cell); // "89283082803ffff"
+     *
+     * // Index at different resolutions
+     * $coarse = $h3->latLngToCell(37.7749, -122.4194, 5);  // ~8km edge
+     * $fine = $h3->latLngToCell(37.7749, -122.4194, 12);   // ~9m edge
+     * ```
+     *
      * @param float $lat Latitude in degrees (-90 to 90).
      * @param float $lng Longitude in degrees (-180 to 180).
-     * @param int $resolution Resolution (0-15).
+     * @param int $resolution Resolution (0-15). Higher values = smaller cells.
      * @return int H3 cell index.
      * @throws H3Exception If the operation fails or coordinates are invalid.
      */
@@ -512,6 +580,18 @@ class H3
     /**
      * Convert H3 cell index to latitude/longitude (center of the cell).
      *
+     * Returns the centroid (geographic center) of the hexagonal cell.
+     *
+     * Example:
+     * ```php
+     * $h3 = new H3();
+     * $cell = $h3->latLngToCell(37.7749, -122.4194, 9);
+     *
+     * $center = $h3->cellToLatLng($cell);
+     * echo "Lat: {$center['lat']}, Lng: {$center['lng']}";
+     * // Note: May differ slightly from input due to cell center alignment
+     * ```
+     *
      * @param int $cell H3 cell index.
      * @return array{lat: float, lng: float} Latitude and longitude in degrees.
      * @throws H3Exception If the operation fails.
@@ -533,6 +613,25 @@ class H3
 
     /**
      * Get the boundary vertices of an H3 cell.
+     *
+     * Returns the vertices that define the hexagon (or pentagon) boundary.
+     * Useful for rendering cells on a map or performing geometric operations.
+     *
+     * Example:
+     * ```php
+     * $h3 = new H3();
+     * $cell = $h3->latLngToCell(37.7749, -122.4194, 9);
+     *
+     * $boundary = $h3->cellToBoundary($cell);
+     * // Returns 6 vertices for hexagons, 5 for pentagons
+     * foreach ($boundary as $vertex) {
+     *     echo "({$vertex['lat']}, {$vertex['lng']})\n";
+     * }
+     *
+     * // Convert to GeoJSON polygon
+     * $coordinates = array_map(fn($v) => [$v['lng'], $v['lat']], $boundary);
+     * $coordinates[] = $coordinates[0]; // Close the polygon
+     * ```
      *
      * @param int $cell H3 cell index.
      * @return array<array{lat: float, lng: float}> Array of lat/lng coordinates.
@@ -561,6 +660,18 @@ class H3
     /**
      * Get the resolution of an H3 cell.
      *
+     * The resolution determines the size of the cell, from 0 (largest, ~4,357 km²)
+     * to 15 (smallest, ~0.9 m²).
+     *
+     * Example:
+     * ```php
+     * $h3 = new H3();
+     * $cell = $h3->latLngToCell(37.7749, -122.4194, 9);
+     *
+     * $res = $h3->getResolution($cell);
+     * echo "Resolution: $res"; // 9
+     * ```
+     *
      * @param int $cell H3 cell index.
      * @return int Resolution (0-15).
      */
@@ -572,6 +683,18 @@ class H3
     /**
      * Get the base cell number of an H3 index.
      *
+     * H3 has 122 base cells (resolution 0 cells) that tile the globe.
+     * Each cell at higher resolutions belongs to exactly one base cell.
+     *
+     * Example:
+     * ```php
+     * $h3 = new H3();
+     * $cell = $h3->latLngToCell(37.7749, -122.4194, 9);
+     *
+     * $baseCell = $h3->getBaseCellNumber($cell);
+     * echo "Base cell: $baseCell"; // 0-121
+     * ```
+     *
      * @param int $cell H3 cell index.
      * @return int Base cell number (0-121).
      */
@@ -582,6 +705,21 @@ class H3
 
     /**
      * Convert H3 index to string representation.
+     *
+     * Returns a 15-character hexadecimal string that uniquely identifies the cell.
+     * This format is commonly used for storage, display, and interoperability.
+     *
+     * Example:
+     * ```php
+     * $h3 = new H3();
+     * $cell = $h3->latLngToCell(37.7749, -122.4194, 9);
+     *
+     * $hexString = $h3->h3ToString($cell);
+     * echo $hexString; // "89283082803ffff"
+     *
+     * // Useful for database storage or API responses
+     * $data = ['h3_index' => $h3->h3ToString($cell)];
+     * ```
      *
      * @param int $cell H3 cell index.
      * @return string Hexadecimal string representation.
@@ -602,6 +740,21 @@ class H3
 
     /**
      * Convert string representation to H3 index.
+     *
+     * Parses a hexadecimal H3 string back into a numeric cell index.
+     * Useful when reading H3 indices from databases, APIs, or user input.
+     *
+     * Example:
+     * ```php
+     * $h3 = new H3();
+     *
+     * // Parse an H3 string from user input or database
+     * $cell = $h3->stringToH3('89283082803ffff');
+     *
+     * // Now use it with other H3 operations
+     * $center = $h3->cellToLatLng($cell);
+     * $neighbors = $h3->gridDisk($cell, 1);
+     * ```
      *
      * @param string $str Hexadecimal string representation (up to 16 hex characters).
      * @return int H3 cell index.
@@ -624,6 +777,21 @@ class H3
     /**
      * Check if an H3 index is a valid cell.
      *
+     * Validates that the given index represents a legitimate H3 cell.
+     * Useful for validating user input or data from external sources.
+     *
+     * Example:
+     * ```php
+     * $h3 = new H3();
+     *
+     * $validCell = $h3->latLngToCell(37.7749, -122.4194, 9);
+     * var_dump($h3->isValidCell($validCell)); // true
+     *
+     * // Invalid index
+     * var_dump($h3->isValidCell(0)); // false
+     * var_dump($h3->isValidCell(12345)); // false
+     * ```
+     *
      * @param int $cell H3 cell index.
      * @return bool True if valid.
      */
@@ -634,6 +802,21 @@ class H3
 
     /**
      * Check if an H3 cell has Class III orientation.
+     *
+     * H3 alternates between Class II and Class III orientations at each resolution.
+     * Class III cells are rotated ~19.1° relative to Class II cells.
+     *
+     * Example:
+     * ```php
+     * $h3 = new H3();
+     * $cell = $h3->latLngToCell(37.7749, -122.4194, 9);
+     *
+     * if ($h3->isResClassIII($cell)) {
+     *     echo "This is a Class III cell (rotated orientation)";
+     * } else {
+     *     echo "This is a Class II cell";
+     * }
+     * ```
      *
      * @param int $cell H3 cell index.
      * @return bool True if Class III.
@@ -646,6 +829,22 @@ class H3
     /**
      * Check if an H3 cell is a pentagon.
      *
+     * The H3 grid contains exactly 12 pentagons at each resolution (one for each
+     * vertex of the icosahedron). Pentagons have only 5 neighbors instead of 6.
+     *
+     * Example:
+     * ```php
+     * $h3 = new H3();
+     *
+     * // Most cells are hexagons
+     * $hexCell = $h3->latLngToCell(37.7749, -122.4194, 9);
+     * var_dump($h3->isPentagon($hexCell)); // false
+     *
+     * // Get actual pentagons at resolution 5
+     * $pentagons = $h3->getPentagons(5);
+     * var_dump($h3->isPentagon($pentagons[0])); // true
+     * ```
+     *
      * @param int $cell H3 cell index.
      * @return bool True if pentagon.
      */
@@ -656,6 +855,26 @@ class H3
 
     /**
      * Get all cells within k distance of the origin cell (filled disk).
+     *
+     * Returns all cells that are at most k steps away from the origin,
+     * forming a filled hexagonal disk. The number of cells is approximately 3k² + 3k + 1.
+     *
+     * Example:
+     * ```php
+     * $h3 = new H3();
+     * $origin = $h3->latLngToCell(37.7749, -122.4194, 9);
+     *
+     * // Get all cells within 2 steps (includes origin)
+     * $cells = $h3->gridDisk($origin, 2);
+     * echo count($cells); // 19 cells (1 + 6 + 12)
+     *
+     * // k=0 returns just the origin
+     * $single = $h3->gridDisk($origin, 0);
+     * echo count($single); // 1
+     *
+     * // Useful for geofencing or area coverage
+     * $coverageArea = $h3->gridDisk($origin, 5);
+     * ```
      *
      * @param int $origin Origin H3 cell index.
      * @param int $k Grid distance (must be non-negative and within configured limit).
@@ -693,6 +912,26 @@ class H3
 
     /**
      * Get all cells within k distance with their distances from origin.
+     *
+     * Similar to gridDisk(), but also returns the distance of each cell from the origin.
+     * Useful for distance-based weighting or concentric ring analysis.
+     *
+     * Example:
+     * ```php
+     * $h3 = new H3();
+     * $origin = $h3->latLngToCell(37.7749, -122.4194, 9);
+     *
+     * $results = $h3->gridDiskDistances($origin, 2);
+     * foreach ($results as $item) {
+     *     echo "Cell: {$item['cell']}, Distance: {$item['distance']}\n";
+     * }
+     * // Distance 0: origin cell
+     * // Distance 1: 6 immediate neighbors
+     * // Distance 2: 12 cells in outer ring
+     *
+     * // Filter by distance
+     * $ring1 = array_filter($results, fn($r) => $r['distance'] === 1);
+     * ```
      *
      * @param int $origin Origin H3 cell index.
      * @param int $k Grid distance (must be non-negative and within configured limit).
@@ -735,6 +974,27 @@ class H3
     /**
      * Get all cells in a hollow ring at exactly k distance from origin.
      *
+     * Unlike gridDisk(), this returns only cells that are exactly k steps away,
+     * forming a hollow ring around the origin. Returns 6*k cells for k > 0.
+     *
+     * Example:
+     * ```php
+     * $h3 = new H3();
+     * $origin = $h3->latLngToCell(37.7749, -122.4194, 9);
+     *
+     * // Get cells exactly 2 steps away
+     * $ring = $h3->gridRing($origin, 2);
+     * echo count($ring); // 12 cells
+     *
+     * // k=1 gives immediate neighbors only
+     * $neighbors = $h3->gridRing($origin, 1);
+     * echo count($neighbors); // 6 cells
+     *
+     * // k=0 returns just the origin
+     * $center = $h3->gridRing($origin, 0);
+     * echo count($center); // 1 cell
+     * ```
+     *
      * @param int $origin Origin H3 cell index.
      * @param int $k Grid distance (must be non-negative and within configured limit).
      * @return int[] Array of H3 cell indices.
@@ -772,6 +1032,22 @@ class H3
     /**
      * Get the grid distance between two cells.
      *
+     * Returns the minimum number of grid steps required to move from the origin
+     * cell to the destination cell. Both cells must be at the same resolution.
+     *
+     * Example:
+     * ```php
+     * $h3 = new H3();
+     * $sf = $h3->latLngToCell(37.7749, -122.4194, 9);
+     * $oakland = $h3->latLngToCell(37.8044, -122.2712, 9);
+     *
+     * $distance = $h3->gridDistance($sf, $oakland);
+     * echo "Grid steps between SF and Oakland: $distance";
+     *
+     * // Distance to self is 0
+     * echo $h3->gridDistance($sf, $sf); // 0
+     * ```
+     *
      * @param int $origin Origin H3 cell index.
      * @param int $destination Destination H3 cell index.
      * @return int Grid distance.
@@ -791,6 +1067,25 @@ class H3
 
     /**
      * Get the path of cells from start to end.
+     *
+     * Returns an ordered sequence of cells that forms a path between the start
+     * and end cells, including both endpoints. Useful for routing and line-of-sight.
+     *
+     * Example:
+     * ```php
+     * $h3 = new H3();
+     * $start = $h3->latLngToCell(37.7749, -122.4194, 9);
+     * $end = $h3->latLngToCell(37.7849, -122.4094, 9);
+     *
+     * $path = $h3->gridPathCells($start, $end);
+     * echo "Path length: " . count($path) . " cells";
+     *
+     * // Visualize the path
+     * foreach ($path as $cell) {
+     *     $coords = $h3->cellToLatLng($cell);
+     *     echo "({$coords['lat']}, {$coords['lng']})\n";
+     * }
+     * ```
      *
      * @param int $start Start H3 cell index.
      * @param int $end End H3 cell index.
@@ -825,6 +1120,23 @@ class H3
     /**
      * Get the parent cell at a coarser resolution.
      *
+     * Navigates up the H3 hierarchy to find the containing cell at a lower resolution.
+     * Every cell has exactly one parent at each coarser resolution.
+     *
+     * Example:
+     * ```php
+     * $h3 = new H3();
+     * $cell = $h3->latLngToCell(37.7749, -122.4194, 9);  // Resolution 9
+     *
+     * // Get parent at resolution 7
+     * $parent = $h3->cellToParent($cell, 7);
+     * echo $h3->getResolution($parent); // 7
+     *
+     * // Get the base cell (resolution 0)
+     * $baseCell = $h3->cellToParent($cell, 0);
+     * echo $h3->getResolution($baseCell); // 0
+     * ```
+     *
      * @param int $cell H3 cell index.
      * @param int $parentRes Parent resolution (must be less than cell's resolution).
      * @return int Parent H3 cell index.
@@ -847,6 +1159,26 @@ class H3
 
     /**
      * Get all children cells at a finer resolution.
+     *
+     * Returns all cells at a finer resolution that are contained within this cell.
+     * A hexagon has 7 children per resolution step (center + 6 surrounding).
+     *
+     * Example:
+     * ```php
+     * $h3 = new H3();
+     * $cell = $h3->latLngToCell(37.7749, -122.4194, 5);  // Resolution 5
+     *
+     * // Get all children at resolution 6
+     * $children = $h3->cellToChildren($cell, 6);
+     * echo count($children); // 7 children
+     *
+     * // Get grandchildren at resolution 7
+     * $grandchildren = $h3->cellToChildren($cell, 7);
+     * echo count($grandchildren); // 49 cells (7 * 7)
+     *
+     * // Warning: large resolution jumps create many cells!
+     * // Resolution 5 -> 10 = 7^5 = 16,807 cells
+     * ```
      *
      * @param int $cell H3 cell index.
      * @param int $childRes Child resolution (must be greater than cell's resolution).
@@ -884,6 +1216,23 @@ class H3
     /**
      * Get the center child cell at a finer resolution.
      *
+     * Returns the single child cell that is geometrically centered within the parent.
+     * More efficient than cellToChildren() when you only need the center.
+     *
+     * Example:
+     * ```php
+     * $h3 = new H3();
+     * $cell = $h3->latLngToCell(37.7749, -122.4194, 5);
+     *
+     * // Get the center child at resolution 8
+     * $centerChild = $h3->cellToCenterChild($cell, 8);
+     *
+     * // The center child contains the same center point
+     * $parentCenter = $h3->cellToLatLng($cell);
+     * $childCenter = $h3->cellToLatLng($centerChild);
+     * // Both coordinates will be very close
+     * ```
+     *
      * @param int $cell H3 cell index.
      * @param int $childRes Child resolution (must be greater than cell's resolution).
      * @return int Center child H3 cell index.
@@ -906,6 +1255,26 @@ class H3
 
     /**
      * Compact a set of cells to their minimal representation.
+     *
+     * Replaces groups of 7 sibling cells with their parent cell where possible.
+     * Reduces storage requirements while preserving the covered area.
+     *
+     * Example:
+     * ```php
+     * $h3 = new H3();
+     * $center = $h3->latLngToCell(37.7749, -122.4194, 9);
+     *
+     * // Get a large disk of cells
+     * $cells = $h3->gridDisk($center, 10);
+     * echo "Original: " . count($cells) . " cells";  // 331 cells
+     *
+     * // Compact to minimal representation
+     * $compacted = $h3->compactCells($cells);
+     * echo "Compacted: " . count($compacted) . " cells";  // Fewer cells
+     *
+     * // Store compacted cells in database for efficiency
+     * $forStorage = array_map(fn($c) => $h3->h3ToString($c), $compacted);
+     * ```
      *
      * @param int[] $cells Array of H3 cell indices.
      * @return int[] Compacted array of H3 cell indices.
@@ -943,6 +1312,25 @@ class H3
 
     /**
      * Uncompact a set of cells to a specific resolution.
+     *
+     * Expands compacted cells back to a uniform resolution. All output cells
+     * will be at the specified target resolution.
+     *
+     * Example:
+     * ```php
+     * $h3 = new H3();
+     *
+     * // Start with compacted cells (mixed resolutions)
+     * $compacted = [...]; // From compactCells() or storage
+     *
+     * // Expand to uniform resolution 9
+     * $expanded = $h3->uncompactCells($compacted, 9);
+     *
+     * // All cells are now at resolution 9
+     * foreach ($expanded as $cell) {
+     *     echo $h3->getResolution($cell) . "\n"; // Always 9
+     * }
+     * ```
      *
      * @param int[] $cells Array of compacted H3 cell indices.
      * @param int $res Target resolution.
@@ -991,6 +1379,25 @@ class H3
     /**
      * Check if two cells are neighbors.
      *
+     * Two cells are neighbors if they share an edge. Both cells must be at the
+     * same resolution. Hexagons have 6 neighbors, pentagons have 5.
+     *
+     * Example:
+     * ```php
+     * $h3 = new H3();
+     * $cell = $h3->latLngToCell(37.7749, -122.4194, 9);
+     * $neighbors = $h3->gridRing($cell, 1);
+     *
+     * // All ring-1 cells are neighbors
+     * foreach ($neighbors as $neighbor) {
+     *     var_dump($h3->areNeighborCells($cell, $neighbor)); // true
+     * }
+     *
+     * // Non-adjacent cells are not neighbors
+     * $farCell = $h3->gridRing($cell, 5)[0];
+     * var_dump($h3->areNeighborCells($cell, $farCell)); // false
+     * ```
+     *
      * @param int $origin First H3 cell index.
      * @param int $destination Second H3 cell index.
      * @return bool True if cells are neighbors.
@@ -1011,10 +1418,28 @@ class H3
     /**
      * Get directed edge between two neighboring cells.
      *
+     * Creates an edge index representing the boundary between two adjacent cells.
+     * The edge has a direction from origin to destination.
+     *
+     * Example:
+     * ```php
+     * $h3 = new H3();
+     * $cell = $h3->latLngToCell(37.7749, -122.4194, 9);
+     * $neighbor = $h3->gridRing($cell, 1)[0];
+     *
+     * // Get the directed edge from cell to neighbor
+     * $edge = $h3->cellsToDirectedEdge($cell, $neighbor);
+     *
+     * // Edge properties
+     * $origin = $h3->getDirectedEdgeOrigin($edge);      // Same as $cell
+     * $dest = $h3->getDirectedEdgeDestination($edge);   // Same as $neighbor
+     * $boundary = $h3->directedEdgeToBoundary($edge);   // Edge vertices
+     * ```
+     *
      * @param int $origin Origin H3 cell index.
      * @param int $destination Destination H3 cell index.
      * @return int Directed edge H3 index.
-     * @throws H3Exception If the operation fails.
+     * @throws H3Exception If the operation fails or cells are not neighbors.
      */
     public function cellsToDirectedEdge(int $origin, int $destination): int
     {
@@ -1031,6 +1456,19 @@ class H3
     /**
      * Check if an H3 index is a valid directed edge.
      *
+     * Validates that the index represents a legitimate H3 directed edge.
+     *
+     * Example:
+     * ```php
+     * $h3 = new H3();
+     * $cell = $h3->latLngToCell(37.7749, -122.4194, 9);
+     * $neighbor = $h3->gridRing($cell, 1)[0];
+     * $edge = $h3->cellsToDirectedEdge($cell, $neighbor);
+     *
+     * var_dump($h3->isValidDirectedEdge($edge)); // true
+     * var_dump($h3->isValidDirectedEdge($cell)); // false (it's a cell, not an edge)
+     * ```
+     *
      * @param int $edge H3 directed edge index.
      * @return bool True if valid directed edge.
      */
@@ -1041,6 +1479,17 @@ class H3
 
     /**
      * Get the origin cell of a directed edge.
+     *
+     * Example:
+     * ```php
+     * $h3 = new H3();
+     * $cellA = $h3->latLngToCell(37.7749, -122.4194, 9);
+     * $cellB = $h3->gridRing($cellA, 1)[0];
+     * $edge = $h3->cellsToDirectedEdge($cellA, $cellB);
+     *
+     * $origin = $h3->getDirectedEdgeOrigin($edge);
+     * var_dump($origin === $cellA); // true
+     * ```
      *
      * @param int $edge H3 directed edge index.
      * @return int Origin H3 cell index.
@@ -1061,6 +1510,17 @@ class H3
     /**
      * Get the destination cell of a directed edge.
      *
+     * Example:
+     * ```php
+     * $h3 = new H3();
+     * $cellA = $h3->latLngToCell(37.7749, -122.4194, 9);
+     * $cellB = $h3->gridRing($cellA, 1)[0];
+     * $edge = $h3->cellsToDirectedEdge($cellA, $cellB);
+     *
+     * $destination = $h3->getDirectedEdgeDestination($edge);
+     * var_dump($destination === $cellB); // true
+     * ```
+     *
      * @param int $edge H3 directed edge index.
      * @return int Destination H3 cell index.
      * @throws H3Exception If the operation fails.
@@ -1079,6 +1539,19 @@ class H3
 
     /**
      * Get both origin and destination cells of a directed edge.
+     *
+     * Convenience method that returns both endpoints of the edge in one call.
+     *
+     * Example:
+     * ```php
+     * $h3 = new H3();
+     * $cell = $h3->latLngToCell(37.7749, -122.4194, 9);
+     * $edges = $h3->originToDirectedEdges($cell);
+     *
+     * $cells = $h3->directedEdgeToCells($edges[0]);
+     * echo "Origin: {$cells['origin']}\n";
+     * echo "Destination: {$cells['destination']}\n";
+     * ```
      *
      * @param int $edge H3 directed edge index.
      * @return array{origin: int, destination: int} Origin and destination cells.
@@ -1101,6 +1574,24 @@ class H3
 
     /**
      * Get all directed edges from a cell.
+     *
+     * Returns all edges that originate from this cell. Hexagons have 6 edges,
+     * pentagons have 5.
+     *
+     * Example:
+     * ```php
+     * $h3 = new H3();
+     * $cell = $h3->latLngToCell(37.7749, -122.4194, 9);
+     *
+     * $edges = $h3->originToDirectedEdges($cell);
+     * echo count($edges); // 6 for hexagons, 5 for pentagons
+     *
+     * // Get all edge boundaries for visualization
+     * foreach ($edges as $edge) {
+     *     $boundary = $h3->directedEdgeToBoundary($edge);
+     *     // Draw edge on map
+     * }
+     * ```
      *
      * @param int $origin H3 cell index.
      * @return int[] Array of directed edge H3 indices.
@@ -1127,6 +1618,21 @@ class H3
 
     /**
      * Get the boundary of a directed edge.
+     *
+     * Returns the geographic coordinates of the edge line between two cells.
+     * Typically returns 2 vertices (the endpoints of the shared edge).
+     *
+     * Example:
+     * ```php
+     * $h3 = new H3();
+     * $cell = $h3->latLngToCell(37.7749, -122.4194, 9);
+     * $edges = $h3->originToDirectedEdges($cell);
+     *
+     * $boundary = $h3->directedEdgeToBoundary($edges[0]);
+     * // Returns 2 points defining the edge line
+     * echo "Start: ({$boundary[0]['lat']}, {$boundary[0]['lng']})\n";
+     * echo "End: ({$boundary[1]['lat']}, {$boundary[1]['lng']})\n";
+     * ```
      *
      * @param int $edge H3 directed edge index.
      * @return array<array{lat: float, lng: float}> Array of lat/lng coordinates.
@@ -1155,6 +1661,22 @@ class H3
     /**
      * Get a specific vertex of a cell.
      *
+     * Returns an H3 vertex index for the specified corner of the cell.
+     * Vertices are shared between adjacent cells.
+     *
+     * Example:
+     * ```php
+     * $h3 = new H3();
+     * $cell = $h3->latLngToCell(37.7749, -122.4194, 9);
+     *
+     * // Get vertex 0
+     * $vertex = $h3->cellToVertex($cell, 0);
+     *
+     * // Get its coordinates
+     * $coords = $h3->vertexToLatLng($vertex);
+     * echo "Vertex 0: ({$coords['lat']}, {$coords['lng']})";
+     * ```
+     *
      * @param int $cell H3 cell index.
      * @param int $vertexNum Vertex number (0-5 for hexagons, 0-4 for pentagons).
      * @return int H3 vertex index.
@@ -1176,6 +1698,24 @@ class H3
 
     /**
      * Get all vertices of a cell.
+     *
+     * Returns H3 vertex indices for all corners of the cell.
+     * Hexagons have 6 vertices, pentagons have 5.
+     *
+     * Example:
+     * ```php
+     * $h3 = new H3();
+     * $cell = $h3->latLngToCell(37.7749, -122.4194, 9);
+     *
+     * $vertices = $h3->cellToVertexes($cell);
+     * echo count($vertices); // 6 for hexagons
+     *
+     * // Get coordinates of all vertices
+     * foreach ($vertices as $i => $vertex) {
+     *     $coords = $h3->vertexToLatLng($vertex);
+     *     echo "Vertex $i: ({$coords['lat']}, {$coords['lng']})\n";
+     * }
+     * ```
      *
      * @param int $cell H3 cell index.
      * @return int[] Array of H3 vertex indices.
@@ -1203,6 +1743,18 @@ class H3
     /**
      * Get the lat/lng coordinates of a vertex.
      *
+     * Converts an H3 vertex index to geographic coordinates.
+     *
+     * Example:
+     * ```php
+     * $h3 = new H3();
+     * $cell = $h3->latLngToCell(37.7749, -122.4194, 9);
+     * $vertex = $h3->cellToVertex($cell, 0);
+     *
+     * $coords = $h3->vertexToLatLng($vertex);
+     * echo "Lat: {$coords['lat']}, Lng: {$coords['lng']}";
+     * ```
+     *
      * @param int $vertex H3 vertex index.
      * @return array{lat: float, lng: float} Latitude and longitude in degrees.
      * @throws H3Exception If the operation fails.
@@ -1225,6 +1777,16 @@ class H3
     /**
      * Check if an H3 index is a valid vertex.
      *
+     * Example:
+     * ```php
+     * $h3 = new H3();
+     * $cell = $h3->latLngToCell(37.7749, -122.4194, 9);
+     * $vertex = $h3->cellToVertex($cell, 0);
+     *
+     * var_dump($h3->isValidVertex($vertex)); // true
+     * var_dump($h3->isValidVertex($cell));   // false (it's a cell, not a vertex)
+     * ```
+     *
      * @param int $vertex H3 vertex index.
      * @return bool True if valid vertex.
      */
@@ -1235,6 +1797,15 @@ class H3
 
     /**
      * Convert degrees to radians.
+     *
+     * Uses the H3 library's conversion for consistency with other H3 calculations.
+     *
+     * Example:
+     * ```php
+     * $h3 = new H3();
+     * $radians = $h3->degsToRads(180.0);
+     * echo $radians; // ~3.14159 (π)
+     * ```
      *
      * @param float $degrees Angle in degrees.
      * @return float Angle in radians.
@@ -1247,6 +1818,15 @@ class H3
     /**
      * Convert radians to degrees.
      *
+     * Uses the H3 library's conversion for consistency with other H3 calculations.
+     *
+     * Example:
+     * ```php
+     * $h3 = new H3();
+     * $degrees = $h3->radsToDegs(M_PI);
+     * echo $degrees; // 180.0
+     * ```
+     *
      * @param float $radians Angle in radians.
      * @return float Angle in degrees.
      */
@@ -1257,6 +1837,20 @@ class H3
 
     /**
      * Get the average hexagon area in square kilometers at a resolution.
+     *
+     * Returns the average area of hexagonal cells at the given resolution.
+     * Actual cell areas vary slightly due to the icosahedral projection.
+     *
+     * Example:
+     * ```php
+     * $h3 = new H3();
+     *
+     * // Compare areas at different resolutions
+     * echo "Res 0: " . $h3->getHexagonAreaAvgKm2(0) . " km²\n";   // ~4,357,449 km²
+     * echo "Res 5: " . $h3->getHexagonAreaAvgKm2(5) . " km²\n";   // ~253 km²
+     * echo "Res 9: " . $h3->getHexagonAreaAvgKm2(9) . " km²\n";   // ~0.1 km²
+     * echo "Res 15: " . $h3->getHexagonAreaAvgKm2(15) . " km²\n"; // ~0.0000009 km²
+     * ```
      *
      * @param int $res Resolution (0-15).
      * @return float Average area in km².
@@ -1279,6 +1873,15 @@ class H3
     /**
      * Get the average hexagon area in square meters at a resolution.
      *
+     * Example:
+     * ```php
+     * $h3 = new H3();
+     *
+     * // Resolution 9 is commonly used for city-level analysis
+     * $area = $h3->getHexagonAreaAvgM2(9);
+     * echo "Res 9 average area: $area m²"; // ~105,332 m²
+     * ```
+     *
      * @param int $res Resolution (0-15).
      * @return float Average area in m².
      * @throws H3Exception If the operation fails.
@@ -1300,6 +1903,23 @@ class H3
     /**
      * Get the exact area of a specific cell in square kilometers.
      *
+     * Unlike getHexagonAreaAvgKm2(), this returns the precise area of the
+     * specific cell, accounting for distortion from the projection.
+     *
+     * Example:
+     * ```php
+     * $h3 = new H3();
+     * $cell = $h3->latLngToCell(37.7749, -122.4194, 9);
+     *
+     * $area = $h3->cellAreaKm2($cell);
+     * echo "Cell area: $area km²";
+     *
+     * // Compare with average
+     * $avg = $h3->getHexagonAreaAvgKm2(9);
+     * $diff = abs($area - $avg) / $avg * 100;
+     * echo "Differs from average by: $diff%";
+     * ```
+     *
      * @param int $cell H3 cell index.
      * @return float Area in km².
      * @throws H3Exception If the operation fails.
@@ -1318,6 +1938,15 @@ class H3
 
     /**
      * Get the exact area of a specific cell in square meters.
+     *
+     * Example:
+     * ```php
+     * $h3 = new H3();
+     * $cell = $h3->latLngToCell(37.7749, -122.4194, 9);
+     *
+     * $area = $h3->cellAreaM2($cell);
+     * echo "Cell area: $area m²";
+     * ```
      *
      * @param int $cell H3 cell index.
      * @return float Area in m².
@@ -1338,6 +1967,15 @@ class H3
     /**
      * Get the exact area of a specific cell in square radians.
      *
+     * Example:
+     * ```php
+     * $h3 = new H3();
+     * $cell = $h3->latLngToCell(37.7749, -122.4194, 9);
+     *
+     * $area = $h3->cellAreaRads2($cell);
+     * echo "Cell area: $area rad²";
+     * ```
+     *
      * @param int $cell H3 cell index.
      * @return float Area in radians².
      * @throws H3Exception If the operation fails.
@@ -1356,6 +1994,18 @@ class H3
 
     /**
      * Get the average hexagon edge length in kilometers at a resolution.
+     *
+     * Useful for understanding the physical scale of cells at different resolutions.
+     *
+     * Example:
+     * ```php
+     * $h3 = new H3();
+     *
+     * echo "Res 0: " . $h3->getHexagonEdgeLengthAvgKm(0) . " km\n";  // ~1,107 km
+     * echo "Res 5: " . $h3->getHexagonEdgeLengthAvgKm(5) . " km\n";  // ~8 km
+     * echo "Res 9: " . $h3->getHexagonEdgeLengthAvgKm(9) . " km\n";  // ~174 m
+     * echo "Res 15: " . $h3->getHexagonEdgeLengthAvgKm(15) . " km\n"; // ~0.5 m
+     * ```
      *
      * @param int $res Resolution (0-15).
      * @return float Average edge length in km.
@@ -1378,6 +2028,14 @@ class H3
     /**
      * Get the average hexagon edge length in meters at a resolution.
      *
+     * Example:
+     * ```php
+     * $h3 = new H3();
+     *
+     * $edgeLength = $h3->getHexagonEdgeLengthAvgM(9);
+     * echo "Res 9 edge length: $edgeLength m"; // ~174m
+     * ```
+     *
      * @param int $res Resolution (0-15).
      * @return float Average edge length in m.
      * @throws H3Exception If the operation fails.
@@ -1399,6 +2057,18 @@ class H3
     /**
      * Get the exact length of a directed edge in kilometers.
      *
+     * Returns the precise length of a specific cell edge.
+     *
+     * Example:
+     * ```php
+     * $h3 = new H3();
+     * $cell = $h3->latLngToCell(37.7749, -122.4194, 9);
+     * $edges = $h3->originToDirectedEdges($cell);
+     *
+     * $length = $h3->edgeLengthKm($edges[0]);
+     * echo "Edge length: $length km";
+     * ```
+     *
      * @param int $edge H3 directed edge index.
      * @return float Edge length in km.
      * @throws H3Exception If the operation fails.
@@ -1417,6 +2087,16 @@ class H3
 
     /**
      * Get the exact length of a directed edge in meters.
+     *
+     * Example:
+     * ```php
+     * $h3 = new H3();
+     * $cell = $h3->latLngToCell(37.7749, -122.4194, 9);
+     * $edges = $h3->originToDirectedEdges($cell);
+     *
+     * $length = $h3->edgeLengthM($edges[0]);
+     * echo "Edge length: $length m";
+     * ```
      *
      * @param int $edge H3 directed edge index.
      * @return float Edge length in m.
@@ -1437,6 +2117,16 @@ class H3
     /**
      * Get the exact length of a directed edge in radians.
      *
+     * Example:
+     * ```php
+     * $h3 = new H3();
+     * $cell = $h3->latLngToCell(37.7749, -122.4194, 9);
+     * $edges = $h3->originToDirectedEdges($cell);
+     *
+     * $length = $h3->edgeLengthRads($edges[0]);
+     * echo "Edge length: $length radians";
+     * ```
+     *
      * @param int $edge H3 directed edge index.
      * @return float Edge length in radians.
      * @throws H3Exception If the operation fails.
@@ -1455,6 +2145,19 @@ class H3
 
     /**
      * Get the number of unique H3 cells at a resolution.
+     *
+     * Returns the total count of cells that tile the entire globe at a resolution.
+     * The count grows by approximately 7x per resolution level.
+     *
+     * Example:
+     * ```php
+     * $h3 = new H3();
+     *
+     * echo "Res 0: " . $h3->getNumCells(0) . " cells\n";   // 122
+     * echo "Res 5: " . $h3->getNumCells(5) . " cells\n";   // 2,016,842
+     * echo "Res 9: " . $h3->getNumCells(9) . " cells\n";   // 4,842,432,842
+     * echo "Res 15: " . $h3->getNumCells(15) . " cells\n"; // 569,707,381,193,162
+     * ```
      *
      * @param int $res Resolution (0-15).
      * @return int Number of cells.
@@ -1476,6 +2179,23 @@ class H3
 
     /**
      * Get all resolution 0 cells.
+     *
+     * Returns the 122 base cells that form the coarsest level of the H3 grid.
+     * These cells are the starting point for the hierarchical indexing system.
+     *
+     * Example:
+     * ```php
+     * $h3 = new H3();
+     *
+     * $baseCells = $h3->getRes0Cells();
+     * echo count($baseCells); // 122
+     *
+     * // Each base cell covers a large portion of Earth
+     * foreach ($baseCells as $cell) {
+     *     $area = $h3->cellAreaKm2($cell);
+     *     echo "Cell area: $area km²\n"; // ~4,357,449 km² average
+     * }
+     * ```
      *
      * @return int[] Array of H3 cell indices.
      * @throws H3Exception If the operation fails.
@@ -1500,6 +2220,23 @@ class H3
 
     /**
      * Get all pentagon cells at a resolution.
+     *
+     * Returns the 12 pentagon cells that exist at every resolution.
+     * Pentagons are located at the vertices of the icosahedron and have
+     * only 5 neighbors instead of 6.
+     *
+     * Example:
+     * ```php
+     * $h3 = new H3();
+     *
+     * $pentagons = $h3->getPentagons(9);
+     * echo count($pentagons); // Always 12
+     *
+     * foreach ($pentagons as $pentagon) {
+     *     $center = $h3->cellToLatLng($pentagon);
+     *     echo "Pentagon at ({$center['lat']}, {$center['lng']})\n";
+     * }
+     * ```
      *
      * @param int $res Resolution (0-15).
      * @return int[] Array of H3 cell indices.
@@ -1528,6 +2265,24 @@ class H3
     /**
      * Get the great circle distance between two coordinates in kilometers.
      *
+     * Calculates the shortest distance between two points on Earth's surface
+     * using the Haversine formula.
+     *
+     * Example:
+     * ```php
+     * $h3 = new H3();
+     *
+     * // Distance between San Francisco and New York
+     * $sf = ['lat' => 37.7749, 'lng' => -122.4194];
+     * $ny = ['lat' => 40.7128, 'lng' => -74.0060];
+     *
+     * $distance = $h3->greatCircleDistanceKm(
+     *     $sf['lat'], $sf['lng'],
+     *     $ny['lat'], $ny['lng']
+     * );
+     * echo "SF to NY: $distance km"; // ~4,129 km
+     * ```
+     *
      * @param float $lat1 Latitude of first point in degrees (-90 to 90).
      * @param float $lng1 Longitude of first point in degrees (-180 to 180).
      * @param float $lat2 Latitude of second point in degrees (-90 to 90).
@@ -1553,6 +2308,18 @@ class H3
 
     /**
      * Get the great circle distance between two coordinates in meters.
+     *
+     * Example:
+     * ```php
+     * $h3 = new H3();
+     *
+     * // Distance between two nearby points
+     * $distance = $h3->greatCircleDistanceM(
+     *     37.7749, -122.4194,
+     *     37.7750, -122.4195
+     * );
+     * echo "Distance: $distance m";
+     * ```
      *
      * @param float $lat1 Latitude of first point in degrees (-90 to 90).
      * @param float $lng1 Longitude of first point in degrees (-180 to 180).
@@ -1580,6 +2347,18 @@ class H3
     /**
      * Get the great circle distance between two coordinates in radians.
      *
+     * Example:
+     * ```php
+     * $h3 = new H3();
+     *
+     * $radians = $h3->greatCircleDistanceRads(
+     *     37.7749, -122.4194,
+     *     40.7128, -74.0060
+     * );
+     * // Convert to km: radians * Earth's radius (6371 km)
+     * $km = $radians * 6371;
+     * ```
+     *
      * @param float $lat1 Latitude of first point in degrees (-90 to 90).
      * @param float $lng1 Longitude of first point in degrees (-180 to 180).
      * @param float $lat2 Latitude of second point in degrees (-90 to 90).
@@ -1606,6 +2385,22 @@ class H3
     /**
      * Convert cell to local IJ coordinates.
      *
+     * Produces IJ coordinates for a cell relative to an origin cell.
+     * Useful for local coordinate systems and grid operations.
+     *
+     * Example:
+     * ```php
+     * $h3 = new H3();
+     * $origin = $h3->latLngToCell(37.7749, -122.4194, 9);
+     * $neighbor = $h3->gridRing($origin, 1)[0];
+     *
+     * $ij = $h3->cellToLocalIj($origin, $neighbor);
+     * echo "I: {$ij['i']}, J: {$ij['j']}";
+     *
+     * // Convert back to cell
+     * $cell = $h3->localIjToCell($origin, $ij['i'], $ij['j']);
+     * ```
+     *
      * @param int $origin Origin H3 cell index.
      * @param int $cell Target H3 cell index.
      * @param int $mode Mode flags (0 for default).
@@ -1629,6 +2424,20 @@ class H3
 
     /**
      * Convert local IJ coordinates to cell.
+     *
+     * Converts IJ coordinates back to an H3 cell index, given an origin.
+     *
+     * Example:
+     * ```php
+     * $h3 = new H3();
+     * $origin = $h3->latLngToCell(37.7749, -122.4194, 9);
+     *
+     * // Get a cell at IJ offset (1, 0) from origin
+     * $cell = $h3->localIjToCell($origin, 1, 0);
+     *
+     * // Verify it's a neighbor
+     * var_dump($h3->areNeighborCells($origin, $cell)); // true
+     * ```
      *
      * @param int $origin Origin H3 cell index.
      * @param int $i I coordinate.
@@ -1656,8 +2465,21 @@ class H3
     /**
      * Get the icosahedron faces that a cell intersects.
      *
+     * The H3 grid is based on an icosahedron with 20 faces.
+     * Most cells belong to a single face, but cells near face edges
+     * may span multiple faces.
+     *
+     * Example:
+     * ```php
+     * $h3 = new H3();
+     * $cell = $h3->latLngToCell(37.7749, -122.4194, 9);
+     *
+     * $faces = $h3->getIcosahedronFaces($cell);
+     * echo "Cell spans " . count($faces) . " face(s): " . implode(', ', $faces);
+     * ```
+     *
      * @param int $cell H3 cell index.
-     * @return int[] Array of face indices.
+     * @return int[] Array of face indices (0-19).
      * @throws H3Exception If the operation fails.
      */
     public function getIcosahedronFaces(int $cell): array
@@ -1922,6 +2744,20 @@ class H3
 
     /**
      * Get the underlying FFI instance.
+     *
+     * Provides direct access to the FFI object for advanced use cases
+     * not covered by this wrapper.
+     *
+     * Example:
+     * ```php
+     * $h3 = new H3();
+     * $ffi = $h3->getFFI();
+     *
+     * // Access FFI directly for low-level operations
+     * $latLng = $ffi->new('LatLng');
+     * $latLng->lat = deg2rad(37.7749);
+     * $latLng->lng = deg2rad(-122.4194);
+     * ```
      *
      * @return FFI The FFI instance.
      */
