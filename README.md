@@ -43,7 +43,7 @@ php -i | grep ffi.enable
 ### 2. Install the PHP Package
 
 ```bash
-composer require foysal50x/h3
+composer require foysal50x/h3-php
 ```
 
 This package includes **pre-built H3 libraries** for common platforms:
