@@ -41,27 +41,6 @@ class H3
      */
     private const MAX_H3_STRING_LENGTH = 16;
 
-    /**
-     * Error code descriptions for better exception messages.
-     */
-    private const ERROR_MESSAGES = [
-        self::E_SUCCESS => 'Success',
-        self::E_FAILED => 'Operation failed',
-        self::E_DOMAIN => 'Argument out of domain',
-        self::E_LATLNG_DOMAIN => 'Latitude/longitude out of range',
-        self::E_RES_DOMAIN => 'Resolution out of range (must be 0-15)',
-        self::E_CELL_INVALID => 'Invalid H3 cell index',
-        self::E_DIR_EDGE_INVALID => 'Invalid directed edge index',
-        self::E_UNDIR_EDGE_INVALID => 'Invalid undirected edge index',
-        self::E_VERTEX_INVALID => 'Invalid vertex index',
-        self::E_PENTAGON => 'Pentagon distortion encountered',
-        self::E_DUPLICATE_INPUT => 'Duplicate input detected',
-        self::E_NOT_NEIGHBORS => 'Cells are not neighbors',
-        self::E_RES_MISMATCH => 'Resolution mismatch',
-        self::E_MEMORY_ALLOC => 'Memory allocation failed',
-        self::E_MEMORY_BOUNDS => 'Memory bounds exceeded',
-        self::E_OPTION_INVALID => 'Invalid option',
-    ];
 
     /**
      * H3 C library header definitions.
@@ -2735,11 +2714,7 @@ class H3
      */
     private function throwH3Exception(string $message, int $errorCode): never
     {
-        $errorDesc = self::ERROR_MESSAGES[$errorCode] ?? "Unknown error code: $errorCode";
-        throw new H3Exception(
-            "$message: $errorDesc (code: $errorCode)",
-            $errorCode
-        );
+        throw new H3Exception($message, $errorCode);
     }
 
     /**
