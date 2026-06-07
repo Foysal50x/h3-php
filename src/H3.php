@@ -66,8 +66,8 @@ class H3
     } CoordIJ;
 
     typedef struct {
-        LatLng *verts;
         int numVerts;
+        LatLng *verts;
     } GeoLoop;
 
     typedef struct {
