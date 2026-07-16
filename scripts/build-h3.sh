@@ -44,8 +44,14 @@ detect_os() {
     esac
 }
 
-# Detect architecture
+# Detect architecture (TARGET_ARCH overrides for cross-compilation, e.g.
+# TARGET_ARCH=x64 on Apple Silicon builds an x86_64 dylib)
 detect_arch() {
+    if [[ -n "$TARGET_ARCH" ]]; then
+        echo "$TARGET_ARCH"
+        return
+    fi
+
     case "$(uname -m)" in
         x86_64|amd64)   echo "x64" ;;
         arm64|aarch64)  echo "arm64" ;;
@@ -128,12 +134,20 @@ build_h3() {
 
     # Configure with CMake (disable tests to avoid linker issues)
     if [[ "$OS" == "darwin" ]]; then
+        # Pin the target architecture so the same runner can cross-compile
+        # (e.g. x86_64 dylib on an Apple Silicon host)
+        local osx_arch="arm64"
+        if [[ "$ARCH" == "x64" ]]; then
+            osx_arch="x86_64"
+        fi
+
         cmake -DCMAKE_BUILD_TYPE=Release \
               -DBUILD_SHARED_LIBS=ON \
               -DBUILD_TESTING=OFF \
               -DENABLE_FORMAT=OFF \
               -DENABLE_DOCS=OFF \
               -DENABLE_LINTING=OFF \
+              -DCMAKE_OSX_ARCHITECTURES="$osx_arch" \
               ..
     elif [[ "$OS" == "linux" ]]; then
         cmake -DCMAKE_BUILD_TYPE=Release \

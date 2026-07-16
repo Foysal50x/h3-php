@@ -58,19 +58,28 @@ jobs:
           path: bin/darwin-arm64/libh3.dylib
           if-no-files-found: error
 
+  # Cross-compiled on Apple Silicon: GitHub retired the Intel macos-13
+  # runners (Dec 2025), so we build the x86_64 dylib on macos-14 via
+  # CMAKE_OSX_ARCHITECTURES instead of depending on Intel runner availability.
   build-macos-x64:
     needs: extract-version
-    runs-on: macos-13
+    runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
 
       - name: Install dependencies
         run: brew install cmake
 
-      - name: Build H3 library
+      - name: Build H3 library (cross-compile x86_64)
         env:
           H3_VERSION: ${{ needs.extract-version.outputs.h3_version }}
+          TARGET_ARCH: x64
         run: bash scripts/build-h3.sh
+
+      - name: Verify architecture
+        run: |
+          lipo -info bin/darwin-x64/libh3.dylib
+          lipo -info bin/darwin-x64/libh3.dylib | grep -q x86_64
 
       - name: List built files
         run: find bin -type f -name "*.dylib" -o -name "*.so" -o -name "*.dll" 2>/dev/null || echo "No libraries found"
