@@ -37,6 +37,18 @@ for f in examples/*.php; do echo "=== $f ===" && php "$f" && echo; done
 | [12-real-estate-analytics.php](12-real-estate-analytics.php) | Real estate analysis platform | Property valuation, neighborhood analysis, proximity scoring, market heatmaps |
 | [13-fleet-management.php](13-fleet-management.php) | Fleet & logistics management | Vehicle tracking, geofencing, coverage analysis, dispatch optimization |
 
+### Official Uber H3 C Example Ports
+
+Direct PHP ports of the [official Uber H3 C examples](https://github.com/uber/h3/tree/master/examples), producing identical output using this package.
+
+| File | Ports | Description | Functions Covered |
+|------|-------|-------------|-------------------|
+| [14-official-index.php](14-official-index.php) | [`index.c`](https://github.com/uber/h3/blob/master/examples/index.c) | Convert coordinates to an H3 index, then find its vertices and center | `latLngToCell`, `cellToBoundary`, `cellToLatLng`, `h3ToString` |
+| [15-official-distance.php](15-official-distance.php) | [`distance.c`](https://github.com/uber/h3/blob/master/examples/distance.c) | Grid distance and haversine (km) distance between two cells | `stringToH3`, `cellToLatLng`, `gridDistance` |
+| [16-official-edge.php](16-official-edge.php) | [`edge.c`](https://github.com/uber/h3/blob/master/examples/edge.c) | Find the directed edge between two cells and print its boundary | `cellsToDirectedEdge`, `directedEdgeToBoundary`, `h3ToString` |
+| [17-official-neighbors.php](17-official-neighbors.php) | [`neighbors.c`](https://github.com/uber/h3/blob/master/examples/neighbors.c) | Find neighboring cells within grid distance 2 | `gridDisk`, `h3ToString` |
+| [18-official-compact-cells.php](18-official-compact-cells.php) | [`compactCells.c`](https://github.com/uber/h3/blob/master/examples/compactCells.c) | Compact a set of cells, then uncompact back to the original set | `compactCells`, `uncompactCells`, `h3ToString` |
+
 ## Example Scenarios
 
 ### 1. Indexing (01-indexing.php)
