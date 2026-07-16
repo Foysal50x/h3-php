@@ -22,7 +22,7 @@ printf("The edge is %s\n", $h3->h3ToString($edge));
 
 $boundary = $h3->directedEdgeToBoundary($edge);
 foreach ($boundary as $v => $vertex) {
-    printf("Edge vertex #%d: %lf, %lf\n", $v, $vertex['lat'], $vertex['lng']);
+    printf("Edge vertex #%d: %f, %f\n", $v, $vertex['lat'], $vertex['lng']);
 }
 
 // Output:

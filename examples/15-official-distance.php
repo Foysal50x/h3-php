@@ -47,10 +47,10 @@ $distance = $h3->gridDistance($h3HQ1, $h3HQ2);
 
 // This binding returns lat/lng in degrees; haversineDistance() expects radians.
 printf(
-    "origin: (%lf, %lf)\n" .
-    "destination: (%lf, %lf)\n" .
+    "origin: (%f, %f)\n" .
+    "destination: (%f, %f)\n" .
     "grid distance: %d\n" .
-    "distance in km: %lfkm\n",
+    "distance in km: %fkm\n",
     $geoHQ1['lat'],
     $geoHQ1['lng'],
     $geoHQ2['lat'],

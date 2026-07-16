@@ -31,9 +31,9 @@ printf("The index is: %s\n", $h3->h3ToString($indexed));
 // why we iterate over exactly what cellToBoundary() returns.
 $boundary = $h3->cellToBoundary($indexed);
 foreach ($boundary as $v => $vertex) {
-    printf("Boundary vertex #%d: %lf, %lf\n", $v, $vertex['lat'], $vertex['lng']);
+    printf("Boundary vertex #%d: %f, %f\n", $v, $vertex['lat'], $vertex['lng']);
 }
 
 // Get the center coordinates.
 $center = $h3->cellToLatLng($indexed);
-printf("Center coordinates: %lf, %lf\n", $center['lat'], $center['lng']);
+printf("Center coordinates: %f, %f\n", $center['lat'], $center['lng']);
