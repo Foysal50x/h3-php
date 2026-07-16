@@ -27,7 +27,7 @@ class H3
      * H3 C library version that this package is compatible with.
      * This version is used when building the bundled H3 library.
      */
-    public const H3_VERSION = '4.4.1';
+    public const H3_VERSION = '4.5.0';
 
     /**
      * Maximum allowed k value for grid operations to prevent memory exhaustion.
@@ -44,7 +44,7 @@ class H3
 
     /**
      * H3 C library header definitions.
-     * Based on H3 v4.4.1
+     * Based on H3 v4.5.0
      */
     private const H3_HEADER = <<<'HEADER'
     typedef uint64_t H3Index;
@@ -122,6 +122,7 @@ class H3
     H3Error getDirectedEdgeOrigin(H3Index edge, H3Index *out);
     H3Error getDirectedEdgeDestination(H3Index edge, H3Index *out);
     H3Error directedEdgeToCells(H3Index edge, H3Index *originDestination);
+    H3Error reverseDirectedEdge(H3Index edge, H3Index *out);
     H3Error originToDirectedEdges(H3Index origin, H3Index *edges);
     H3Error directedEdgeToBoundary(H3Index edge, CellBoundary *gb);
 
@@ -232,7 +233,7 @@ class H3
      */
     private function ensureFfiAvailable(): void
     {
-        if (!extension_loaded('ffi')) {
+        if (! extension_loaded('ffi')) {
             throw new H3Exception(
                 'The FFI extension is not loaded. Please enable it in your php.ini by adding "extension=ffi".',
                 self::E_FAILED
@@ -287,6 +288,7 @@ class H3
                     self::E_FAILED
                 );
             }
+
             return self::$instance;
         }
 
@@ -1517,6 +1519,36 @@ class H3
     }
 
     /**
+     * Reverse a directed edge, swapping its origin and destination cells.
+     *
+     * Example:
+     * ```php
+     * $h3 = new H3();
+     * $cellA = $h3->latLngToCell(37.7749, -122.4194, 9);
+     * $cellB = $h3->gridRing($cellA, 1)[0];
+     * $edge = $h3->cellsToDirectedEdge($cellA, $cellB);
+     *
+     * $reversed = $h3->reverseDirectedEdge($edge);
+     * var_dump($reversed === $h3->cellsToDirectedEdge($cellB, $cellA)); // true
+     * ```
+     *
+     * @param int $edge H3 directed edge index.
+     * @return int Directed edge index with origin and destination reversed.
+     * @throws H3Exception If the operation fails.
+     */
+    public function reverseDirectedEdge(int $edge): int
+    {
+        $out = $this->ffi->new('H3Index');
+        $error = $this->ffi->reverseDirectedEdge($edge, FFI::addr($out));
+
+        if ($error !== self::E_SUCCESS) {
+            $this->throwH3Exception("Failed to reverse directed edge", $error);
+        }
+
+        return $out->cdata;
+    }
+
+    /**
      * Get both origin and destination cells of a directed edge.
      *
      * Convenience method that returns both endpoints of the edge in one call.
@@ -2613,7 +2645,7 @@ class H3
         }
 
         // Validate hex characters only
-        if (!ctype_xdigit($str)) {
+        if (! ctype_xdigit($str)) {
             throw new H3Exception(
                 'H3 string must contain only hexadecimal characters (0-9, a-f, A-F)',
                 self::E_FAILED
@@ -2701,6 +2733,7 @@ class H3
     {
         $array = $this->ffi->new("{$type}[$size]");
         FFI::memset($array, 0, FFI::sizeof($array));
+
         return $array;
     }
 

@@ -9,11 +9,11 @@
 
 PHP FFI bindings for [Uber's H3](https://h3geo.org/) hexagonal hierarchical geospatial indexing system.
 
-Based on **H3 v4.4.1** - the latest version as of November 2025.
+Based on **H3 v4.5.0** - the latest version as of May 2026.
 
 ## Requirements
 
-- PHP 8.1 or higher
+- PHP 8.1 or higher (tested up to PHP 8.5)
 - PHP FFI extension enabled (`ffi.enable=1` in php.ini)
 
 ## Installation
@@ -172,6 +172,7 @@ $h3->isValidDirectedEdge(int $edge): bool
 $h3->getDirectedEdgeOrigin(int $edge): int
 $h3->getDirectedEdgeDestination(int $edge): int
 $h3->directedEdgeToCells(int $edge): array{origin: int, destination: int}
+$h3->reverseDirectedEdge(int $edge): int
 $h3->originToDirectedEdges(int $origin): array
 $h3->directedEdgeToBoundary(int $edge): array
 ```
