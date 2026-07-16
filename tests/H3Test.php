@@ -339,6 +339,28 @@ class H3Test extends TestCase
         }
     }
 
+    public function testReverseDirectedEdge(): void
+    {
+        $origin = $this->h3->latLngToCell(37.7749, -122.4194, 9);
+        $ring = $this->h3->gridRing($origin, 1);
+        $neighbor = $ring[0];
+
+        $edge = $this->h3->cellsToDirectedEdge($origin, $neighbor);
+        $reversed = $this->h3->reverseDirectedEdge($edge);
+
+        $this->assertTrue($this->h3->isValidDirectedEdge($reversed));
+        $this->assertEquals($this->h3->cellsToDirectedEdge($neighbor, $origin), $reversed);
+        $this->assertEquals($neighbor, $this->h3->getDirectedEdgeOrigin($reversed));
+        $this->assertEquals($origin, $this->h3->getDirectedEdgeDestination($reversed));
+        $this->assertEquals($edge, $this->h3->reverseDirectedEdge($reversed));
+    }
+
+    public function testReverseDirectedEdgeInvalid(): void
+    {
+        $this->expectException(H3Exception::class);
+        $this->h3->reverseDirectedEdge(0);
+    }
+
     public function testDirectedEdgeToBoundary(): void
     {
         $origin = $this->h3->latLngToCell(37.7749, -122.4194, 9);

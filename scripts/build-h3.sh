@@ -31,7 +31,7 @@ get_h3_version() {
     fi
 
     # Fallback version
-    echo "4.4.1"
+    echo "4.5.0"
 }
 
 # Detect OS
