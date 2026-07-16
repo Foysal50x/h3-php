@@ -358,6 +358,7 @@ class H3Test extends TestCase
     public function testReverseDirectedEdgeInvalid(): void
     {
         $this->expectException(H3Exception::class);
+        $this->expectExceptionCode(H3::E_DIR_EDGE_INVALID);
         $this->h3->reverseDirectedEdge(0);
     }
 
